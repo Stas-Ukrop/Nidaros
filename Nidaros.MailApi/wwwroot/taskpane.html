@@ -1,0 +1,137 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Nidaros Mail Assistant</title>
+
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            color: #242424;
+        }
+
+        button {
+            padding: 12px 20px;
+            background: #176b52;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: wait;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            background: #f3f3f3;
+            padding: 12px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Nidaros Mail Assistant</h2>
+
+    <p id="status">Initializing Outlook...</p>
+
+    <button id="analyze" disabled>
+        Analyze mail
+    </button>
+
+    <h3>Server response</h3>
+
+    <pre id="result"></pre>
+
+    <script>
+        const button = document.getElementById("analyze");
+        const status = document.getElementById("status");
+        const result = document.getElementById("result");
+
+        Office.onReady(info => {
+            if (info.host !== Office.HostType.Outlook) {
+                status.textContent = "Open this page in Outlook.";
+                return;
+            }
+
+            status.textContent = "Outlook is ready.";
+            button.disabled = false;
+        });
+
+        button.addEventListener("click", async () => {
+            button.disabled = true;
+            status.textContent = "Processing email...";
+            result.textContent = "";
+
+            try {
+                const item = Office.context.mailbox.item;
+
+                if (!item) {
+                    throw new Error("No email is selected.");
+                }
+
+                const body = await new Promise((resolve, reject) => {
+                    item.body.getAsync(
+                        Office.CoercionType.Text,
+                        response => {
+                            if (response.status === Office.AsyncResultStatus.Succeeded) {
+                                resolve(response.value);
+                            } else {
+                                reject(new Error(response.error.message));
+                            }
+                        }
+                    );
+                });
+
+                const response = await fetch("/api/mail/analyze", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        itemId: item.itemId,
+                        subject: item.subject,
+                        sender: item.from?.emailAddress,
+                        body,
+                        attachments: (item.attachments ?? []).map(file => ({
+                            id: file.id,
+                            name: file.name,
+                            size: file.size,
+                            contentType: file.contentType ?? ""
+                        }))
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+
+                result.textContent = JSON.stringify(
+                    await response.json(),
+                    null,
+                    2
+                );
+
+                status.textContent = "Email processed successfully.";
+
+            } catch (error) {
+                status.textContent = "Error";
+                result.textContent = error.message;
+
+            } finally {
+                button.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
