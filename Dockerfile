@@ -1,12 +1,12 @@
 
-# Сборка ASP.NET Core приложения
+# Сборка ASP.NET Core (.NET 10)
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 
 WORKDIR /src
 
 COPY . .
 
-RUN dotnet publish "Nidaros.MailApi.csproj" \
+RUN dotnet publish "Nidaros.MailApi/Nidaros.MailApi.csproj" \
     -c Release \
     -o /app/publish \
     /p:UseAppHost=false
