@@ -53,6 +53,50 @@
             cursor: wait;
         }
 
+        .files-box {
+            display: grid;
+            gap: 10px;
+            padding: 10px;
+            margin-bottom: 16px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+        }
+
+        .files-box label {
+            font-size: 13px;
+        }
+
+        .files-box input[type="file"] {
+            width: 100%;
+            font: inherit;
+            font-size: 13px;
+        }
+
+        .hint {
+            margin: 0;
+            font-size: 12px;
+            color: #777;
+        }
+
+        #fileList {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 6px;
+        }
+
+        #fileList li {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 6px 8px;
+            background: #f7f7f7;
+            border-radius: 5px;
+            font-size: 12px;
+            overflow-wrap: anywhere;
+        }
+
         .field {
             padding: 10px;
             margin-bottom: 10px;
@@ -130,6 +174,26 @@
             <input type="radio" name="role" value="worker">
             Werknemer
         </label>
+    </div>
+
+    <h3>Bestanden (PDF / DOCX / XML)</h3>
+
+    <div class="files-box">
+        <label>
+            <input type="checkbox" id="useAttachments" checked>
+            PDF/DOCX/XML bijlagen uit deze e-mail meenemen
+        </label>
+
+        <label for="fileInput">Of kies bestanden van uw computer:</label>
+        <input
+            id="fileInput"
+            type="file"
+            accept=".pdf,.docx,.xml,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/xml,text/xml"
+            multiple>
+
+        <p class="hint">Maximaal 10 MB per bestand. Gescande PDF's zonder tekstlaag worden niet gelezen.</p>
+
+        <ul id="fileList"></ul>
     </div>
 
     <button id="analyze" disabled>Gegevens ophalen</button>
@@ -265,10 +329,27 @@
     <pre id="result"></pre>
 
     <script>
+        const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
         const button = document.getElementById("analyze");
         const status = document.getElementById("status");
         const result = document.getElementById("result");
         const kvkField = document.getElementById("kvkField");
+        const fileInput = document.getElementById("fileInput");
+        const useAttachments = document.getElementById("useAttachments");
+        const fileList = document.getElementById("fileList");
+
+        // PDF, DOCX, XML (oude .doc niet — die moet als .docx worden opgeslagen)
+        const isPdfOrXml = (name = "", type = "") =>
+            /\.(pdf|xml|docx)$/i.test(name) || /pdf|xml|wordprocessingml/i.test(type);
+
+        const isOldDoc = (name = "", type = "") =>
+            /\.doc$/i.test(name) || type === "application/msword";
+
+        const formatSize = bytes =>
+            bytes > 1024 * 1024
+                ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+                : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
         const confidenceState = confidence =>
             confidence === 100
@@ -294,11 +375,136 @@
             badge.textContent = label;
         };
 
+        // Список файлов: [{ name, size, source, note }]
+        const renderFileList = items => {
+            fileList.innerHTML = "";
+
+            items.forEach(item => {
+                const li = document.createElement("li");
+                const left = document.createElement("span");
+                const right = document.createElement("span");
+
+                const sourceLabel = item.source === "attachment" ? "bijlage" : "upload";
+                left.textContent = `${item.name} (${sourceLabel}${item.size ? ", " + formatSize(item.size) : ""})`;
+                right.textContent = item.note ?? "";
+
+                li.append(left, right);
+                fileList.append(li);
+            });
+        };
+
+        const previewSelection = () => {
+            const items = [];
+            const item = Office.context?.mailbox?.item;
+
+            if (useAttachments.checked && item) {
+                (item.attachments ?? [])
+                    .filter(a => !a.isInline && isPdfOrXml(a.name, a.contentType))
+                    .forEach(a => items.push({ name: a.name, size: a.size, source: "attachment" }));
+            }
+
+            Array.from(fileInput.files ?? [])
+                .forEach(f => items.push({
+                    name: f.name,
+                    size: f.size,
+                    source: "upload",
+                    note: isOldDoc(f.name, f.type)
+                        ? "sla op als .docx"
+                        : isPdfOrXml(f.name, f.type) ? "" : "niet ondersteund"
+                }));
+
+            renderFileList(items);
+        };
+
+        // Lokaal bestand -> base64 (zonder "data:...;base64," prefix)
+        const readLocalFile = file => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+            reader.onerror = () => reject(new Error(`Kan ${file.name} niet lezen.`));
+            reader.readAsDataURL(file);
+        });
+
+        // Outlook-bijlage -> base64 (vereist Mailbox 1.8)
+        const readAttachment = (item, attachmentId) => new Promise((resolve, reject) => {
+            item.getAttachmentContentAsync(attachmentId, response => {
+                if (response.status !== Office.AsyncResultStatus.Succeeded) {
+                    reject(new Error(response.error.message));
+                    return;
+                }
+
+                const { format, content } = response.value;
+
+                if (format === Office.MailboxEnums.AttachmentContentFormat.Base64) {
+                    resolve(content);
+                } else {
+                    reject(new Error(`Onverwacht bijlageformaat: ${format}`));
+                }
+            });
+        });
+
+        const collectFiles = async item => {
+            const files = [];
+            const skipped = [];
+
+            if (useAttachments.checked) {
+                const candidates = (item.attachments ?? [])
+                    .filter(a => !a.isInline && isPdfOrXml(a.name, a.contentType));
+
+                if (candidates.length > 0 &&
+                    !Office.context.requirements.isSetSupported("Mailbox", "1.8")) {
+                    skipped.push("Bijlagen lezen wordt niet ondersteund in deze Outlook-versie.");
+                } else {
+                    for (const a of candidates) {
+                        if (a.size > MAX_FILE_BYTES) {
+                            skipped.push(`${a.name}: te groot`);
+                            continue;
+                        }
+
+                        files.push({
+                            name: a.name,
+                            contentType: a.contentType ?? "",
+                            base64: await readAttachment(item, a.id),
+                            source: "attachment"
+                        });
+                    }
+                }
+            }
+
+            for (const f of Array.from(fileInput.files ?? [])) {
+                if (isOldDoc(f.name, f.type)) {
+                    skipped.push(`${f.name}: oud .doc-formaat, sla op als .docx`);
+                    continue;
+                }
+
+                if (!isPdfOrXml(f.name, f.type)) {
+                    skipped.push(`${f.name}: alleen PDF, DOCX of XML`);
+                    continue;
+                }
+
+                if (f.size > MAX_FILE_BYTES) {
+                    skipped.push(`${f.name}: te groot`);
+                    continue;
+                }
+
+                files.push({
+                    name: f.name,
+                    contentType: f.type ?? "",
+                    base64: await readLocalFile(f),
+                    source: "upload"
+                });
+            }
+
+            return { files, skipped };
+        };
+
         document.querySelectorAll('input[name="role"]').forEach(radio => {
             radio.addEventListener("change", event => {
                 kvkField.classList.toggle("hidden", event.target.value !== "entrepreneur");
             });
         });
+
+        fileInput.addEventListener("change", previewSelection);
+        useAttachments.addEventListener("change", previewSelection);
 
         Office.onReady(info => {
             if (info.host !== Office.HostType.Outlook) {
@@ -308,6 +514,7 @@
 
             status.textContent = "Outlook is klaar.";
             button.disabled = false;
+            previewSelection();
         });
 
         button.addEventListener("click", async () => {
@@ -331,6 +538,11 @@
                     );
                 });
 
+                status.textContent = "Bestanden worden gelezen...";
+                const { files, skipped } = await collectFiles(item);
+
+                status.textContent = "Gegevens worden geanalyseerd...";
+
                 const response = await fetch("/api/mail/analyze", {
                     method: "POST",
                     headers: {
@@ -347,14 +559,15 @@
                             name: file.name,
                             size: file.size,
                             contentType: file.contentType ?? ""
-                        }))
+                        })),
+                        files
                     })
                 });
 
                 if (!response.ok) {
-    const err = await response.json().catch(() => null);
-    throw new Error(`Server error ${response.status}: ${err?.error ?? response.statusText}`);
-}
+                    const err = await response.json().catch(() => null);
+                    throw new Error(`Server error ${response.status}: ${err?.error ?? response.statusText}`);
+                }
 
                 const data = await response.json();
 
@@ -362,11 +575,19 @@
                     setField(key, field);
                 });
 
+                // Resultaat per bestand tonen
+                renderFileList([
+                    ...(data.files ?? []).map(f => ({
+                        name: f.name,
+                        source: f.source,
+                        note: f.error ? `fout: ${f.error}` : `${f.characters} tekens gelezen`
+                    })),
+                    ...skipped.map(s => ({ name: s, source: "upload", note: "overgeslagen" }))
+                ]);
+
                 result.textContent = JSON.stringify(data, null, 2);
 
-                status.textContent = data.fields
-                    ? "Gegevens ontvangen en gecontroleerd."
-                    : "Server werkt. Veldextractie moet nog aan de API worden toegevoegd.";
+                status.textContent = "Gegevens ontvangen en gecontroleerd.";
             } catch (error) {
                 status.textContent = "Fout";
                 result.textContent = error.message;

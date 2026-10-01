@@ -8,8 +8,8 @@
 
     <Id>8a4c9c55-5c61-4c91-8f1d-5d56f5a86c97</Id>
 
-    <!-- Подняли версию: Outlook кэширует манифест, так он точно перечитается -->
-    <Version>1.0.0.1</Version>
+    <!-- Версия поднята: Outlook перечитает манифест -->
+    <Version>1.0.0.2</Version>
 
     <ProviderName>Nidaros</ProviderName>
     <DefaultLocale>en-US</DefaultLocale>
@@ -37,7 +37,8 @@
     <FormSettings>
         <Form xsi:type="ItemRead">
             <DesktopSettings>
-                <SourceLocation DefaultValue="https://nidaros.onrender.com/taskpane.html"/>
+                <!-- ?v=2 — новый URL, чтобы Outlook не брал страницу из кэша -->
+                <SourceLocation DefaultValue="https://nidaros.onrender.com/taskpane.html?v=2"/>
                 <RequestedHeight>450</RequestedHeight>
             </DesktopSettings>
         </Form>
@@ -98,8 +99,8 @@
                 <bt:Image id="Icon.80" DefaultValue="https://nidaros.onrender.com/assets/icon-80.png"/>
             </bt:Images>
             <bt:Urls>
-                <bt:Url id="Taskpane.Url" DefaultValue="https://nidaros.onrender.com/taskpane.html"/>
-                <bt:Url id="Commands.Url" DefaultValue="https://nidaros.onrender.com/commands.html"/>
+                <bt:Url id="Taskpane.Url" DefaultValue="https://nidaros.onrender.com/taskpane.html?v=2"/>
+                <bt:Url id="Commands.Url" DefaultValue="https://nidaros.onrender.com/commands.html?v=2"/>
             </bt:Urls>
             <bt:ShortStrings>
                 <bt:String id="Group.Label" DefaultValue="Nidaros"/>
