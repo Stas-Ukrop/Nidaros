@@ -182,12 +182,20 @@ static FieldResult Field(string text, FieldSpec spec, string allLabels)
     // движок не откатится к короткой "BTW" и не возьмёт "nummer" как значение.
     // (?![\p{L}\p{N}]) — конец слова; работает и после точки ("KVK nr.").
     const string endOfWord = @"(?![\p{L}\p{N}])";
-    var label = $@"^[ \t]*(?>{spec.Labels}){endOfWord}";
-    var notALabel = $@"(?!(?:{allLabels}){endOfWord})";
-    var value = $@"{notALabel}(?<value>{spec.ValuePattern})[ \t]*$";
 
-    var sameLine = $@"{label}(?:[ \t]*[:\-–][ \t]*|[ \t]+){value}";
-    var nextLine = $@"{label}[ \t]*[:\-–]?[ \t]*\n(?:[ \t]*\n)*[ \t]*{value}";
+    // Метка в начале строки или после таба (колонки в одной строке разделены табом)
+    var label = $@"(?:^|\t)[ \t]*(?>{spec.Labels}){endOfWord}";
+
+    // Хвост метки до двоеточия: "Betalingsachterstanden binnen de eigen company:"
+    const string labelTail = @"[ \t]+[\p{L} ]{1,40}?:";
+
+    var notALabel = $@"(?!(?:{allLabels}){endOfWord})";
+
+    // Значение заканчивается на конце строки или на табе (следующая колонка)
+    var value = $@"{notALabel}(?<value>{spec.ValuePattern})(?=[ \t]*(?:\t|$))";
+
+    var sameLine = $@"{label}(?:[ \t]*[:\-–][ \t]*|{labelTail}[ \t]*|[ \t]+){value}";
+    var nextLine = $@"{label}(?:{labelTail}|[ \t]*[:\-–]?)[ \t]*\n(?:[ \t]*\n)*[ \t]*{value}";
 
     foreach (var pattern in new[] { sameLine, nextLine })
     {
@@ -527,18 +535,30 @@ static (string Text, string? Error) ExtractPdfText(byte[] bytes)
 {
     using var pdf = PdfDocument.Open(bytes);
 
-    var sb = new StringBuilder();
+    var pages = new List<string>();
 
     foreach (var page in pdf.GetPages())
     {
-        // Сохраняет порядок строк: "Naam Test Persoon" остаётся одной строкой
-        sb.AppendLine(ContentOrderTextExtractor.GetText(page));
+        // PdfPig: ось Y вверх (Top > Bottom). PdfLayout работает "сверху вниз".
+        var height = page.Height;
+        var words = page.GetWords().Select(w => new WordBox(
+            w.Text,
+            w.BoundingBox.Left,
+            w.BoundingBox.Right,
+            height - w.BoundingBox.Top,
+            height - w.BoundingBox.Bottom));
+
+        // Склеиваем "метка:" со значением под ней или справа — по координатам,
+        // а не по порядку текста (поля могут быть разбросаны по колонкам)
+        var text = PdfLayout.BuildText(words);
+
+        pages.Add(text.Length > 0 ? text : ContentOrderTextExtractor.GetText(page));
     }
 
-    var text = sb.ToString().Trim();
+    var result = string.Join("\n\n", pages).Trim();
 
-    return text.Length > 0
-        ? (text, null)
+    return result.Length > 0
+        ? (result, null)
         : ("", "PDF has no text layer (scanned document?).");
 }
 
@@ -566,6 +586,198 @@ static string HumanizeName(string name)
 {
     var spaced = Regex.Replace(name, "([a-z0-9])([A-Z])", "$1 $2");
     return spaced.Replace('_', ' ').Replace('-', ' ');
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Раскладка PDF: пары "метка → значение" по координатам
+// ─────────────────────────────────────────────────────────────
+
+/// Слово на странице. Координаты "сверху вниз": Top < Bottom.
+public sealed record WordBox(string Text, double Left, double Right, double Top, double Bottom);
+
+/// <summary>
+/// Превращает слова страницы в текст, удобный для поиска полей.
+///
+/// Проблема: в PDF поля могут стоять в несколько колонок ("Naam:" слева, "KVK nummer:" справа,
+/// значения под ними). Обычное извлечение текста перемешивает колонки:
+/// "Naam: / KVK nummer: / Test Persoon / 00000000".
+///
+/// Решение:
+///   1. слова → строки (по вертикали);
+///   2. строки → сегменты (большой горизонтальный разрыв = другая колонка);
+///   3. каждой метке "...:" подбираем значение — сегмент ПОД ней (предпочтительно) или СПРАВА;
+///      пары выбираются глобально по наименьшему расстоянию, чтобы соседние колонки
+///      не "украли" значения друг у друга;
+///   4. на выходе: "Naam: Test Persoon" — по строке на пару, остальное как есть.
+/// </summary>
+public static class PdfLayout
+{
+    private sealed record Segment(string Text, double Left, double Right, double Top, double Bottom, int Line)
+    {
+        public double Height => Math.Max(Bottom - Top, 1);
+        public bool IsLabel => Text.Length > 1 && Text.EndsWith(':');
+
+        /// Уже готовая пара "Datum afname: 12-12-2026" — не может быть значением чужой метки
+        public bool IsInlinePair => Regex.IsMatch(Text, @"^\p{L}[\p{L} .\-]{0,60}:\s+\S");
+    }
+
+    public static string BuildText(IEnumerable<WordBox> words)
+    {
+        var segments = ToSegments(words);
+
+        if (segments.Count == 0)
+        {
+            return "";
+        }
+
+        var pairs = PairLabels(segments);
+        var usedAsValue = pairs.Values.ToHashSet();
+
+        var lines = new List<string>();
+
+        foreach (var line in segments.GroupBy(s => s.Line).OrderBy(g => g.Key))
+        {
+            var rest = new List<string>();
+
+            foreach (var segment in line.OrderBy(s => s.Left))
+            {
+                if (usedAsValue.Contains(segment))
+                {
+                    continue;
+                }
+
+                if (pairs.TryGetValue(segment, out var value))
+                {
+                    lines.Add($"{segment.Text} {value.Text}");
+                }
+                else
+                {
+                    rest.Add(segment.Text);
+                }
+            }
+
+            // Колонки одной строки без меток — через таб, чтобы не склеились в одно значение
+            if (rest.Count > 0)
+            {
+                lines.Add(string.Join("\t", rest));
+            }
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static List<Segment> ToSegments(IEnumerable<WordBox> words)
+    {
+        var sorted = words
+            .Where(w => !string.IsNullOrWhiteSpace(w.Text))
+            .OrderBy(w => w.Top)
+            .ThenBy(w => w.Left)
+            .ToList();
+
+        // 1. Строки: слово попадает в строку, если его середина внутри её высоты
+        var lines = new List<List<WordBox>>();
+
+        foreach (var word in sorted)
+        {
+            var middle = (word.Top + word.Bottom) / 2;
+            var line = lines.FindLast(l => middle >= l.Min(w => w.Top) && middle <= l.Max(w => w.Bottom));
+
+            if (line is null)
+            {
+                lines.Add([word]);
+            }
+            else
+            {
+                line.Add(word);
+            }
+        }
+
+        // 2. Сегменты: разрыв больше 1.5 высоты шрифта = другая колонка
+        var segments = new List<Segment>();
+
+        for (var lineNo = 0; lineNo < lines.Count; lineNo++)
+        {
+            var current = new List<WordBox>();
+
+            foreach (var word in lines[lineNo].OrderBy(w => w.Left))
+            {
+                if (current.Count > 0)
+                {
+                    var previous = current[^1];
+                    var fontHeight = Math.Max(previous.Bottom - previous.Top, word.Bottom - word.Top);
+
+                    if (word.Left - previous.Right > 1.5 * fontHeight)
+                    {
+                        segments.Add(ToSegment(current, lineNo));
+                        current = [];
+                    }
+                }
+
+                current.Add(word);
+            }
+
+            if (current.Count > 0)
+            {
+                segments.Add(ToSegment(current, lineNo));
+            }
+        }
+
+        return segments;
+    }
+
+    private static Segment ToSegment(List<WordBox> words, int line) => new(
+        string.Join(" ", words.Select(w => w.Text)).Trim(),
+        words.Min(w => w.Left),
+        words.Max(w => w.Right),
+        words.Min(w => w.Top),
+        words.Max(w => w.Bottom),
+        line);
+
+    private static Dictionary<Segment, Segment> PairLabels(List<Segment> segments)
+    {
+        var candidates = new List<(Segment Label, Segment Value, double Cost)>();
+
+        foreach (var label in segments.Where(s => s.IsLabel))
+        {
+            var h = label.Height;
+
+            foreach (var value in segments.Where(s => !s.IsLabel && !s.IsInlinePair && s != label))
+            {
+                // Значение ПОД меткой: близко по вертикали и в той же колонке
+                var gapBelow = value.Top - label.Bottom;
+                var overlap = Math.Min(label.Right, value.Right) - Math.Max(label.Left, value.Left);
+                var leftShift = Math.Abs(value.Left - label.Left);
+
+                if (value.Top > label.Top + h / 2 && gapBelow <= 2.5 * h && (overlap > 0 || leftShift <= 2 * h))
+                {
+                    candidates.Add((label, value, Math.Max(gapBelow, 0) + 0.1 * leftShift));
+                }
+
+                // Значение СПРАВА на той же строке (дороже, чем снизу)
+                var gapRight = value.Left - label.Right;
+
+                if (value.Line == label.Line && gapRight > 0 && gapRight <= 250)
+                {
+                    candidates.Add((label, value, 1000 + gapRight));
+                }
+            }
+        }
+
+        // Жадно по наименьшему расстоянию: каждая метка и каждое значение — максимум в одной паре
+        var pairs = new Dictionary<Segment, Segment>();
+        var taken = new HashSet<Segment>();
+
+        foreach (var (label, value, _) in candidates.OrderBy(c => c.Cost))
+        {
+            if (!pairs.ContainsKey(label) && taken.Add(value))
+            {
+                pairs[label] = value;
+            }
+        }
+
+        return pairs;
+    }
 }
 
 
@@ -606,7 +818,7 @@ public record FileProcessResult(
 public record FieldSpec(
     string Key,
     string Labels,
-    string ValuePattern = @"[^\n]+?",
+    string ValuePattern = @"[^\n\t]+?",
     Func<string, (string Value, string? Problem)>? Validate = null,
     string? FallbackPattern = null
 );
