@@ -4,7 +4,16 @@ var builder = WebApplication.CreateBuilder(args);
 
 var app = builder.Build();
 
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        if (ctx.File.Name.EndsWith(".html"))
+        {
+            ctx.Context.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+        }
+    }
+});
 
 app.MapGet("/health", () => Results.Ok(new
 {
