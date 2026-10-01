@@ -125,6 +125,14 @@
 
         .field-value.empty { color: #aaa; }
 
+        .field-note {
+            margin-top: 4px;
+            font-size: 12px;
+            color: #8a5a00;
+        }
+
+        .field-note:empty { display: none; }
+
         .confidence {
             padding: 3px 7px;
             border-radius: 999px;
@@ -261,6 +269,7 @@
                     <span class="confidence neutral">Niet gecontroleerd</span>
                 </div>
                 <div class="field-value empty">—</div>
+                <div class="field-note"></div>
             `;
             field.querySelector(".field-label").textContent = label;
             fieldsBox.append(field);
@@ -281,12 +290,16 @@
 
             const valueEl = container.querySelector(".field-value");
             const badge = container.querySelector(".confidence");
+            const noteEl = container.querySelector(".field-note");
 
             let value = field?.value ?? "";
             if (key === "customerType") value = CUSTOMER_TYPE_LABELS[value] ?? value;
 
             valueEl.textContent = value || "—";
             valueEl.classList.toggle("empty", !value);
+
+            // Uitleg van de server (bv. "IBAN-controlegetal klopt niet."), niet bij "missing"
+            noteEl.textContent = field?.status !== "missing" ? (field?.note ?? "") : "";
 
             const [state, label] = confidenceState(Number(field?.confidence ?? 0));
             badge.className = `confidence ${state}`;

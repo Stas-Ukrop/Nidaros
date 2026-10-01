@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -43,7 +44,7 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
         });
     }
 
-    // Текст письма + текст всех PDF/XML файлов
+    // Текст письма + текст всех файлов
     var combined = new StringBuilder(mail.Body?.Trim() ?? "");
     var fileResults = new List<FileProcessResult>();
 
@@ -60,98 +61,13 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
 
         if (fileText.Length > 0)
         {
-            combined.AppendLine().AppendLine().AppendLine(fileText);
+            combined.Append("\n\n").Append(fileText);
         }
     }
 
-    var text = combined.ToString().Trim();
+    var text = NormalizeText(combined.ToString());
 
-    var customerType = Extract(
-        text,
-        @"^\s*(?:nieuwe klant of bestaande klant|klant|customer)\s*[:\-]\s*(?<value>nieuwe klant|bestaande klant|new|existing)\s*$"
-    );
-
-    customerType = customerType with
-    {
-        Value = customerType.Value.ToLowerInvariant() switch
-        {
-            "nieuwe klant" or "new" => "new",
-            "bestaande klant" or "existing" => "existing",
-            _ => ""
-        }
-    };
-
-    var fields = new Dictionary<string, FieldResult>
-    {
-        ["name"] = Extract(
-            text,
-            @"^\s*(?:naam|name)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["address"] = Extract(
-            text,
-            @"^\s*(?:adres|address)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["postalCode"] = Extract(
-            text,
-            @"^\s*(?:postcode|postal code)\s*[:\-]\s*(?<value>\d{4}\s?[A-Z]{2})",
-            @"\b(?<value>\d{4}\s?[A-Z]{2})\b"
-        ),
-
-        ["city"] = Extract(
-            text,
-            @"^\s*(?:woonplaats|city)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["iban"] = Extract(
-            text,
-            @"^\s*iban\s*[:\-]\s*(?<value>[A-Z]{2}\d{2}[A-Z0-9 ]{10,30})",
-            @"\b(?<value>[A-Z]{2}\d{2}[A-Z0-9]{11,30})\b"
-        ),
-
-        ["customerType"] = customerType,
-
-        ["kvk"] = Extract(
-            text,
-            @"^\s*(?:kvk nummer|kvk-nummer|kvk)\s*[:\-]\s*(?<value>\d{8})"
-        ),
-
-        ["vat"] = Extract(
-            text,
-            @"^\s*(?:btw nummer|btw-nummer|vat number|vat)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["invoiceNumber"] = Extract(
-            text,
-            @"^\s*(?:factuurnummer|invoice number)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["article"] = Extract(
-            text,
-            @"^\s*(?:artikel|article|item)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["quantity"] = Extract(
-            text,
-            @"^\s*(?:hoeveelheid|quantity)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["deliveryDate"] = Extract(
-            text,
-            @"^\s*(?:datum afname|delivery date)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["paymentDueDate"] = Extract(
-            text,
-            @"^\s*(?:uiterste betalingsdatum|payment due date)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        ),
-
-        ["paymentArrears"] = Extract(
-            text,
-            @"^\s*(?:betalingsachterstanden|payment arrears)\s*[:\-]\s*(?<value>[^\r\n]+)"
-        )
-    };
+    var fields = ExtractFields(text);
 
     return Results.Ok(new
     {
@@ -164,6 +80,8 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
         attachmentCount = mail.Attachments?.Length ?? 0,
         files = fileResults,
         readyToSend = fields.Values.All(field => field.Confidence == 100),
+        // Для отладки: какой текст сервер реально увидел
+        extractedText = text.Length > 5000 ? text[..5000] + "…" : text,
         processedAt = DateTimeOffset.UtcNow
     });
 });
@@ -171,41 +89,291 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
 app.Run();
 
 
-static FieldResult Extract(
-    string text,
-    string pattern,
-    string? fallbackPattern = null)
+// ─────────────────────────────────────────────────────────────
+// Извлечение полей
+// ─────────────────────────────────────────────────────────────
+
+static FieldSpec[] FieldSpecs() =>
+[
+    // Метки: длинные варианты ПЕРВЫМИ ("btw nummer" раньше "btw")
+    new("name",
+        Labels: "klantnaam|naam klant|volledige naam|naam|full name|name"),
+
+    new("address",
+        Labels: "straat en huisnummer|adres|address|street"),
+
+    new("postalCode",
+        Labels: "postcode|postal code|zip code|zip",
+        ValuePattern: @"\d{4}[ \t]?[A-Za-z]{2}",
+        Validate: ValidatePostalCode,
+        FallbackPattern: @"\b(?<value>[1-9]\d{3} ?[A-Z]{2})\b"),
+
+    new("city",
+        Labels: "woonplaats|plaats|stad|city|town"),
+
+    new("iban",
+        Labels: "iban[- ]?nummer|rekeningnummer|iban",
+        ValuePattern: @"[A-Za-z]{2}\d{2}[A-Za-z0-9 ]{10,40}?",
+        Validate: ValidateIban,
+        FallbackPattern: @"\b(?<value>[A-Z]{2}\d{2}[A-Z0-9]{11,30})\b"),
+
+    new("customerType",
+        Labels: "nieuwe klant of bestaande klant|klanttype|soort klant|klant|customer type|customer",
+        ValuePattern: @"nieuwe klant|bestaande klant|nieuw|bestaand|new|existing",
+        Validate: ValidateCustomerType),
+
+    new("kvk",
+        Labels: @"kvk[- ]?nummer|kvk[- ]?nr\.?|kamer van koophandel|kvk|coc number|coc",
+        ValuePattern: @"[\d .]{8,12}",
+        Validate: ValidateKvk),
+
+    new("vat",
+        Labels: @"btw[- ]?nummer|btw[- ]?id|btw[- ]?nr\.?|btw|vat number|vat id|vat",
+        Validate: ValidateVat,
+        FallbackPattern: @"\b(?<value>NL\d{9}B\d{2})\b"),
+
+    new("invoiceNumber",
+        Labels: @"factuurnummer|factuur[- ]?nr\.?|factuur|invoice number|invoice no\.?|invoice"),
+
+    new("article",
+        Labels: "artikelnaam|artikel|product|omschrijving|article|item"),
+
+    new("quantity",
+        Labels: "hoeveelheid|aantal|quantity|qty",
+        Validate: ValidateQuantity),
+
+    new("deliveryDate",
+        Labels: "datum afname|afnamedatum|leverdatum|delivery date",
+        Validate: ValidateDate),
+
+    new("paymentDueDate",
+        Labels: "uiterste betalingsdatum|vervaldatum|betaaldatum|payment due date|due date",
+        Validate: ValidateDate),
+
+    new("paymentArrears",
+        Labels: "betalingsachterstanden|betalingsachterstand|achterstand|payment arrears|arrears")
+];
+
+
+static Dictionary<string, FieldResult> ExtractFields(string text)
 {
-    var match = Regex.Match(
-        text,
-        pattern,
-        RegexOptions.IgnoreCase | RegexOptions.Multiline
-    );
+    // Метки, которые не являются нашими полями, но тоже не могут быть значением
+    // (иначе при пустом "Naam" значением станет следующая строка "BSN")
+    const string otherLabels =
+        "bsn|type dossier|e-?mail(?:adres)?|telefoon(?:nummer)?|geboortedatum";
 
-    if (match.Success)
-    {
-        return new FieldResult(
-            match.Groups["value"].Value.Trim(),
-            100
-        );
-    }
+    var specs = FieldSpecs();
+    var allLabels = string.Join("|", specs.Select(s => s.Labels).Append(otherLabels));
 
-    if (fallbackPattern is null)
-    {
-        return new FieldResult("", 1);
-    }
-
-    match = Regex.Match(
-        text,
-        fallbackPattern,
-        RegexOptions.IgnoreCase | RegexOptions.Multiline
-    );
-
-    return match.Success
-        ? new FieldResult(match.Groups["value"].Value.Trim(), 85)
-        : new FieldResult("", 1);
+    return specs.ToDictionary(s => s.Key, s => Field(text, s, allLabels));
 }
 
+
+/// Ищет значение по метке в трёх вариантах:
+///   1. "Naam: Test Persoon" / "Naam - Test Persoon" / "Naam Test Persoon" (одна строка)
+///   2. "Naam" и "Test Persoon" на соседних строках (PDF-таблица, прочитанная по колонкам)
+///   3. fallback без метки (только для форматов, которые узнаются сами: IBAN, postcode, BTW)
+static FieldResult Field(string text, FieldSpec spec, string allLabels)
+{
+    var timeout = TimeSpan.FromMilliseconds(500);
+    var options = RegexOptions.IgnoreCase | RegexOptions.Multiline;
+
+    // (?>...) — атомарная группа: если совпала длинная метка "BTW nummer",
+    // движок не откатится к короткой "BTW" и не возьмёт "nummer" как значение.
+    // (?![\p{L}\p{N}]) — конец слова; работает и после точки ("KVK nr.").
+    const string endOfWord = @"(?![\p{L}\p{N}])";
+    var label = $@"^[ \t]*(?>{spec.Labels}){endOfWord}";
+    var notALabel = $@"(?!(?:{allLabels}){endOfWord})";
+    var value = $@"{notALabel}(?<value>{spec.ValuePattern})[ \t]*$";
+
+    var sameLine = $@"{label}(?:[ \t]*[:\-–][ \t]*|[ \t]+){value}";
+    var nextLine = $@"{label}[ \t]*[:\-–]?[ \t]*\n(?:[ \t]*\n)*[ \t]*{value}";
+
+    foreach (var pattern in new[] { sameLine, nextLine })
+    {
+        var match = Regex.Match(text, pattern, options, timeout);
+
+        if (match.Success)
+        {
+            return Score(match.Groups["value"].Value, spec.Validate, 100, "found");
+        }
+    }
+
+    if (spec.FallbackPattern is not null)
+    {
+        // Без IgnoreCase: иначе "2026 Al..." похоже на почтовый индекс
+        var match = Regex.Match(text, spec.FallbackPattern, RegexOptions.Multiline, timeout);
+
+        if (match.Success)
+        {
+            return Score(match.Groups["value"].Value, spec.Validate, 85, "guessed");
+        }
+    }
+
+    return new FieldResult("", 1, "missing", "Niet gevonden in e-mail of bestanden.");
+}
+
+
+static FieldResult Score(
+    string raw,
+    Func<string, (string Value, string? Problem)>? validate,
+    int baseConfidence,
+    string status)
+{
+    var value = raw.Trim();
+
+    if (validate is null)
+    {
+        return new FieldResult(value, baseConfidence, status,
+            status == "guessed" ? "Gevonden zonder label, controleer." : null);
+    }
+
+    var (normalized, problem) = validate(value);
+
+    if (problem is not null)
+    {
+        return new FieldResult(normalized, Math.Min(baseConfidence, 75), "invalid", problem);
+    }
+
+    return new FieldResult(normalized, baseConfidence, status,
+        status == "guessed" ? "Gevonden zonder label, controleer." : null);
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Валидация и нормализация
+// ─────────────────────────────────────────────────────────────
+
+static (string, string?) ValidatePostalCode(string value)
+{
+    var m = Regex.Match(value, @"^(\d{4})\s?([A-Za-z]{2})$");
+
+    if (!m.Success)
+        return (value, "Ongeldige postcode.");
+
+    var normalized = $"{m.Groups[1].Value} {m.Groups[2].Value.ToUpperInvariant()}";
+
+    return m.Groups[1].Value[0] == '0'
+        ? (normalized, "Nederlandse postcode begint niet met 0.")
+        : (normalized, null);
+}
+
+
+static (string, string?) ValidateIban(string value)
+{
+    var iban = Regex.Replace(value, @"\s", "").ToUpperInvariant();
+
+    if (!Regex.IsMatch(iban, @"^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$"))
+        return (iban, "Ongeldig IBAN-formaat.");
+
+    if (iban.StartsWith("NL") && iban.Length != 18)
+        return (FormatIban(iban), "Nederlandse IBAN moet 18 tekens hebben.");
+
+    // ISO 13616 mod-97: eerste 4 tekens naar achteren, letters → getallen (A=10)
+    var rearranged = iban[4..] + iban[..4];
+    var remainder = 0;
+
+    foreach (var ch in rearranged)
+    {
+        var digits = char.IsLetter(ch) ? (ch - 'A' + 10).ToString() : ch.ToString();
+
+        foreach (var d in digits)
+        {
+            remainder = (remainder * 10 + (d - '0')) % 97;
+        }
+    }
+
+    return remainder == 1
+        ? (FormatIban(iban), null)
+        : (FormatIban(iban), "IBAN-controlegetal klopt niet.");
+}
+
+
+static string FormatIban(string iban) =>
+    string.Join(" ", Enumerable.Range(0, (iban.Length + 3) / 4)
+        .Select(i => iban.Substring(i * 4, Math.Min(4, iban.Length - i * 4))));
+
+
+static (string, string?) ValidateCustomerType(string value) =>
+    value.Trim().ToLowerInvariant() switch
+    {
+        "nieuwe klant" or "nieuw" or "new" => ("new", null),
+        "bestaande klant" or "bestaand" or "existing" => ("existing", null),
+        _ => (value, "Onbekend klanttype.")
+    };
+
+
+static (string, string?) ValidateKvk(string value)
+{
+    var digits = Regex.Replace(value, @"[\s.]", "");
+
+    return Regex.IsMatch(digits, @"^\d{8}$")
+        ? (digits, null)
+        : (digits, "KVK-nummer moet 8 cijfers hebben.");
+}
+
+
+static (string, string?) ValidateVat(string value)
+{
+    var vat = Regex.Replace(value, @"[\s.]", "").ToUpperInvariant();
+
+    if (Regex.IsMatch(vat, @"^NL\d{9}B\d{2}$"))
+        return (vat, null);
+
+    return Regex.IsMatch(vat, @"^[A-Z]{2}[A-Z0-9]{2,13}$")
+        ? (vat, "Geen Nederlands BTW-formaat (NL123456789B01).")
+        : (vat, "Ongeldig BTW-nummer.");
+}
+
+
+static (string, string?) ValidateQuantity(string value)
+{
+    return Regex.IsMatch(value, @"^\d+(?:[.,]\d+)?\b")
+        ? (value, null)
+        : (value, "Hoeveelheid begint niet met een getal.");
+}
+
+
+static (string, string?) ValidateDate(string value)
+{
+    string[] formats =
+    [
+        "dd-MM-yyyy", "d-M-yyyy", "dd/MM/yyyy", "d/M/yyyy",
+        "dd.MM.yyyy", "d.M.yyyy", "yyyy-MM-dd",
+        "d MMMM yyyy", "dd MMMM yyyy", "d MMM yyyy"
+    ];
+
+    foreach (var culture in new[] { GetCulture("nl-NL"), CultureInfo.InvariantCulture })
+    {
+        if (DateTime.TryParseExact(value.Trim(), formats, culture,
+                DateTimeStyles.AllowWhiteSpaces, out var date))
+        {
+            return (date.ToString("dd-MM-yyyy", CultureInfo.InvariantCulture), null);
+        }
+    }
+
+    return (value, "Datum niet herkend.");
+}
+
+
+static CultureInfo GetCulture(string name)
+{
+    // В Docker с InvariantGlobalization культуры может не быть
+    try { return CultureInfo.GetCultureInfo(name); }
+    catch (CultureNotFoundException) { return CultureInfo.InvariantCulture; }
+}
+
+
+static string NormalizeText(string text) =>
+    text.Replace("\r\n", "\n")
+        .Replace('\r', '\n')
+        .Replace('\u00A0', ' ')   // non-breaking space из PDF/Word
+        .Trim();
+
+
+// ─────────────────────────────────────────────────────────────
+// Чтение файлов
+// ─────────────────────────────────────────────────────────────
 
 static (string Text, string? Error) ExtractFileText(UploadedFile file, long maxBytes)
 {
@@ -315,7 +483,7 @@ static (string Text, string? Error) ExtractDocxText(byte[] bytes)
                         .Where(c => c.Length > 0)
                         .ToList();
 
-                    // Таблица "Naam | Jan Jansen" → "Naam: Jan Jansen", чтобы сработали регулярки
+                    // Таблица "Naam | Jan Jansen" → "Naam: Jan Jansen"
                     lines.Add(cells.Count == 2
                         ? $"{cells[0].TrimEnd(':', ' ')}: {cells[1]}"
                         : string.Join(" | ", cells));
@@ -332,7 +500,7 @@ static (string Text, string? Error) ExtractDocxText(byte[] bytes)
 
     Walk(body);
 
-    var text = string.Join(Environment.NewLine, lines.Where(l => l.Trim().Length > 0));
+    var text = string.Join("\n", lines.Where(l => l.Trim().Length > 0));
 
     return text.Length > 0
         ? (text, null)
@@ -363,7 +531,7 @@ static (string Text, string? Error) ExtractPdfText(byte[] bytes)
 
     foreach (var page in pdf.GetPages())
     {
-        // Сохраняет порядок строк, так что "Naam: ..." остаётся на одной строке
+        // Сохраняет порядок строк: "Naam Test Persoon" остаётся одной строкой
         sb.AppendLine(ContentOrderTextExtractor.GetText(page));
     }
 
@@ -381,14 +549,12 @@ static (string Text, string? Error) ExtractXmlText(byte[] bytes)
     using var stream = new MemoryStream(bytes);
     var doc = XDocument.Load(stream);
 
-    // Каждый конечный элемент -> строка "label: value",
-    // чтобы сработали те же регулярки, что и для письма.
-    // <PostalCode>1234AB</PostalCode> -> "Postal Code: 1234AB"
+    // <PostalCode>1234AB</PostalCode> → "Postal Code: 1234AB"
     var lines = doc.Descendants()
         .Where(e => !e.HasElements && !string.IsNullOrWhiteSpace(e.Value))
         .Select(e => $"{HumanizeName(e.Name.LocalName)}: {e.Value.Trim()}");
 
-    var text = string.Join(Environment.NewLine, lines);
+    var text = string.Join("\n", lines);
 
     return text.Length > 0
         ? (text, null)
@@ -402,6 +568,10 @@ static string HumanizeName(string name)
     return spaced.Replace('_', ' ').Replace('-', ' ');
 }
 
+
+// ─────────────────────────────────────────────────────────────
+// Модели
+// ─────────────────────────────────────────────────────────────
 
 public record MailRequest(
     string? ItemId,
@@ -433,7 +603,18 @@ public record FileProcessResult(
     string? Error
 );
 
+public record FieldSpec(
+    string Key,
+    string Labels,
+    string ValuePattern = @"[^\n]+?",
+    Func<string, (string Value, string? Problem)>? Validate = null,
+    string? FallbackPattern = null
+);
+
+/// Status: found | guessed | invalid | missing
 public record FieldResult(
     string Value,
-    int Confidence
+    int Confidence,
+    string Status,
+    string? Note
 );
