@@ -109,6 +109,7 @@
         #fileList li {
             display: flex;
             justify-content: space-between;
+            align-items: center;
             gap: 8px;
             padding: 6px 8px;
             background: #f7f7f7;
@@ -116,6 +117,27 @@
             font-size: 12px;
             overflow-wrap: anywhere;
         }
+
+        #fileList li.unchecked { opacity: .6; }
+
+        .file-pick {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            cursor: pointer;
+            min-width: 0;
+        }
+
+        .file-pick input { flex: none; margin: 0; }
+
+        .file-note {
+            flex: none;
+            max-width: 45%;
+            text-align: right;
+            color: #555;
+        }
+
+        .file-note.error { color: #a1261b; }
 
         /* Alleen-lezen velden: worden door de server gevuld */
         .field {
@@ -224,13 +246,13 @@
             <input
                 id="fileInput"
                 type="file"
-                accept=".pdf,.docx,.xml,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/xml,text/xml"
-                multiple>
+                accept=".pdf,.docx,.xml,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/xml,text/xml">
         </div>
 
         <p id="modeHint" class="hint"></p>
 
         <ul id="fileList"></ul>
+
 
         <p class="hint">Maximaal 10 MB per bestand. Gescande PDF's zonder tekstlaag worden niet gelezen.</p>
     </div>
@@ -364,56 +386,127 @@
                 ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
                 : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
+        // Er wordt precies één bestand verwerkt.
+        // Sleutel: "att:<id>" voor een bijlage, "pc:<naam>:<grootte>" voor een bestand van de computer.
+        let selectedKey = null;
+
+        // Resultaat na de laatste analyse: sleutel → { text, error }
+        let fileNotes = new Map();
+
         const renderFileList = items => {
             fileList.innerHTML = "";
 
+            // Keuzerondje alleen als er bij bijlagen echt iets te kiezen is
+            const showPicker = fileMode() === "mail" && items.some(i => i.selectable);
+
             items.forEach(item => {
                 const li = document.createElement("li");
-                const left = document.createElement("span");
-                const right = document.createElement("span");
+                const pick = document.createElement("label");
+                const name = document.createElement("span");
+                const note = document.createElement("span");
+
+                pick.className = "file-pick";
+                note.className = "file-note";
 
                 const sourceLabel = item.source === "attachment" ? "bijlage" : "upload";
-                left.textContent = `${item.name} (${sourceLabel}${item.size ? ", " + formatSize(item.size) : ""})`;
-                right.textContent = item.note ?? "";
+                name.textContent = `${item.name} (${sourceLabel}${item.size ? ", " + formatSize(item.size) : ""})`;
 
-                li.append(left, right);
+                const isChosen = item.selectable && item.key === selectedKey;
+
+                if (showPicker) {
+                    const radio = document.createElement("input");
+                    radio.type = "radio";
+                    radio.name = "attachmentPick";
+                    radio.checked = isChosen;
+                    radio.disabled = !item.selectable;
+                    radio.addEventListener("change", () => {
+                        selectedKey = item.key;
+                        previewSelection();
+                    });
+                    pick.append(radio);
+                }
+
+                li.classList.toggle("unchecked", !isChosen);
+                pick.append(name);
+
+                const result = fileNotes.get(item.key);
+                note.textContent = result?.text ?? item.note ?? "";
+                note.classList.toggle("error", Boolean(result?.error) || (!item.selectable && Boolean(item.note)));
+
+                li.append(pick, note);
                 fileList.append(li);
             });
         };
 
-        const previewSelection = () => {
-            const items = [];
-            const item = Office.context?.mailbox?.item;
-            const mode = fileMode();
+        const updateHint = items => {
+            const selectable = items.filter(i => i.selectable).length;
+            const chosen = items.find(i => i.selectable && i.key === selectedKey);
 
-            pcBox.classList.toggle("hidden", mode !== "pc");
-
-            if (mode === "mail") {
-                const attachments = mailAttachments(item);
-
-                attachments.forEach(a => items.push({ name: a.name, size: a.size, source: "attachment" }));
-
-                modeHint.textContent = !canReadAttachments()
-                    ? "Deze Outlook-versie kan bijlagen niet lezen. Kies 'Bestand van computer'."
-                    : attachments.length === 0
-                        ? "Geen PDF/DOCX/XML bijlagen in deze e-mail. Alleen de tekst van de e-mail wordt gelezen."
-                        : `${attachments.length} bijlage(n) worden direct uit de e-mail gelezen, zonder downloaden.`;
+            if (fileMode() === "mail" && !canReadAttachments()) {
+                modeHint.textContent = "Deze Outlook-versie kan bijlagen niet lezen. Kies 'Bestand van computer'.";
+            } else if (fileMode() === "mail") {
+                modeHint.textContent = selectable === 0
+                    ? "Geen PDF/DOCX/XML bijlagen in deze e-mail. Alleen de tekst van de e-mail wordt gelezen."
+                    : selectable === 1
+                        ? "Het bestand wordt direct uit de e-mail gelezen, zonder downloaden."
+                        : `Kies één van de ${selectable} bijlagen om te verwerken.`;
             } else {
-                Array.from(fileInput.files ?? []).forEach(f => items.push({
-                    name: f.name,
-                    size: f.size,
-                    source: "upload",
-                    note: isOldDoc(f.name, f.type)
-                        ? "sla op als .docx"
-                        : isSupported(f.name, f.type) ? "" : "niet ondersteund"
-                }));
-
                 modeHint.textContent = items.length === 0
-                    ? "Kies een of meer bestanden. Bijlagen uit de e-mail worden genegeerd."
-                    : "";
+                    ? "Kies één bestand. Bijlagen uit de e-mail worden genegeerd."
+                    : chosen ? "" : "Dit bestand kan niet worden verwerkt. Kies een ander bestand.";
+            }
+        };
+
+        // Huidige lijst bestanden voor de gekozen modus
+        const currentItems = () => {
+            const item = Office.context?.mailbox?.item;
+
+            if (fileMode() === "mail") {
+                return mailAttachments(item).map(a => ({
+                    key: `att:${a.id}`,
+                    name: a.name,
+                    size: a.size,
+                    source: "attachment",
+                    selectable: a.size <= MAX_FILE_BYTES,
+                    note: a.size > MAX_FILE_BYTES ? "te groot" : ""
+                }));
             }
 
+            const f = fileInput.files?.[0];
+
+            if (!f) return [];
+
+            const problem = isOldDoc(f.name, f.type)
+                ? "sla op als .docx"
+                : !isSupported(f.name, f.type)
+                    ? "niet ondersteund"
+                    : f.size > MAX_FILE_BYTES ? "te groot" : "";
+
+            return [{
+                key: `pc:${f.name}:${f.size}`,
+                name: f.name,
+                size: f.size,
+                source: "upload",
+                selectable: !problem,
+                note: problem,
+                file: f
+            }];
+        };
+
+        // Keuze ongeldig of nog niet gemaakt → eerste bruikbare bestand
+        const ensureSelection = items => {
+            if (!items.some(i => i.selectable && i.key === selectedKey)) {
+                selectedKey = items.find(i => i.selectable)?.key ?? null;
+            }
+        };
+
+        const previewSelection = () => {
+            pcBox.classList.toggle("hidden", fileMode() !== "pc");
+
+            const items = currentItems();
+            ensureSelection(items);
             renderFileList(items);
+            updateHint(items);
         };
 
         const readLocalFile = file => new Promise((resolve, reject) => {
@@ -441,63 +534,45 @@
             });
         });
 
+        // Alleen het gekozen bestand. keys[i] hoort bij files[i] — zo koppelen we het serverresultaat terug.
         const collectFiles = async item => {
             const files = [];
-            const skipped = [];
+            const keys = [];
+            const chosen = currentItems().filter(i => i.selectable && i.key === selectedKey);
 
-            if (fileMode() === "mail") {
-                const candidates = mailAttachments(item);
+            if (fileMode() === "mail" && chosen.length > 0 && !canReadAttachments()) {
+                throw new Error("Bijlagen lezen wordt niet ondersteund in deze Outlook-versie.");
+            }
 
-                if (candidates.length > 0 && !canReadAttachments()) {
-                    skipped.push("Bijlagen lezen wordt niet ondersteund in deze Outlook-versie.");
+            for (const entry of chosen) {
+                if (entry.source === "attachment") {
+                    const attachment = mailAttachments(item).find(a => `att:${a.id}` === entry.key);
+
+                    files.push({
+                        name: attachment.name,
+                        contentType: attachment.contentType ?? "",
+                        base64: await readAttachment(item, attachment.id),
+                        source: "attachment"
+                    });
                 } else {
-                    for (const a of candidates) {
-                        if (a.size > MAX_FILE_BYTES) {
-                            skipped.push(`${a.name}: te groot`);
-                            continue;
-                        }
-
-                        files.push({
-                            name: a.name,
-                            contentType: a.contentType ?? "",
-                            base64: await readAttachment(item, a.id),
-                            source: "attachment"
-                        });
-                    }
+                    files.push({
+                        name: entry.file.name,
+                        contentType: entry.file.type ?? "",
+                        base64: await readLocalFile(entry.file),
+                        source: "upload"
+                    });
                 }
 
-                return { files, skipped };
+                keys.push(entry.key);
             }
 
-            // Modus "pc": alleen gekozen bestanden
-            for (const f of Array.from(fileInput.files ?? [])) {
-                if (isOldDoc(f.name, f.type)) {
-                    skipped.push(`${f.name}: oud .doc-formaat, sla op als .docx`);
-                    continue;
-                }
-
-                if (!isSupported(f.name, f.type)) {
-                    skipped.push(`${f.name}: alleen PDF, DOCX of XML`);
-                    continue;
-                }
-
-                if (f.size > MAX_FILE_BYTES) {
-                    skipped.push(`${f.name}: te groot`);
-                    continue;
-                }
-
-                files.push({
-                    name: f.name,
-                    contentType: f.type ?? "",
-                    base64: await readLocalFile(f),
-                    source: "upload"
-                });
-            }
-
-            return { files, skipped };
+            return { files, keys };
         };
 
-        fileInput.addEventListener("change", previewSelection);
+        fileInput.addEventListener("change", () => {
+            fileNotes = new Map();
+            previewSelection();
+        });
 
         document.querySelectorAll('input[name="fileMode"]').forEach(radio =>
             radio.addEventListener("change", previewSelection));
@@ -534,6 +609,8 @@
             button.disabled = true;
             setStatus("Gegevens worden opgehaald...");
             resetFields();
+            fileNotes = new Map();
+            previewSelection();
             result.textContent = "Bezig...";
 
             try {
@@ -553,7 +630,7 @@
                 });
 
                 setStatus("Bestanden worden gelezen...");
-                const { files, skipped } = await collectFiles(item);
+                const { files, keys } = await collectFiles(item);
 
                 setStatus("Gegevens worden geanalyseerd...");
 
@@ -584,14 +661,12 @@
 
                 FIELDS.forEach(([key]) => setField(key, data?.fields?.[key]));
 
-                renderFileList([
-                    ...(data.files ?? []).map(f => ({
-                        name: f.name,
-                        source: f.source,
-                        note: f.error ? `fout: ${f.error}` : `${f.characters} tekens gelezen`
-                    })),
-                    ...skipped.map(s => ({ name: s, source: "upload", note: "overgeslagen" }))
-                ]);
+                // Resultaat per bestand naast het juiste vinkje tonen
+                fileNotes = new Map((data.files ?? []).map((f, i) => [keys[i], {
+                    text: f.error ? `fout: ${f.error}` : `${f.characters} tekens gelezen`,
+                    error: Boolean(f.error)
+                }]));
+                previewSelection();
 
                 result.textContent = JSON.stringify(data, null, 2);
 
