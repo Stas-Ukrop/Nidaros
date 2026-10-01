@@ -31,16 +31,6 @@ app.MapGet("/health", () => Results.Ok(new
 
 app.MapPost("/api/mail/analyze", (MailRequest mail) =>
 {
-    var role = mail.Role?.Trim().ToLowerInvariant();
-
-    if (role is not ("student" or "entrepreneur" or "worker"))
-    {
-        return Results.BadRequest(new
-        {
-            error = "Unknown role."
-        });
-    }
-
     var uploadedFiles = mail.Files ?? [];
 
     if (string.IsNullOrWhiteSpace(mail.Subject) &&
@@ -98,12 +88,6 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
             @"^\s*(?:naam|name)\s*[:\-]\s*(?<value>[^\r\n]+)"
         ),
 
-        ["bsn"] = Extract(
-            text,
-            @"^\s*bsn\s*[:\-]\s*(?<value>\d{9})",
-            @"\b(?<value>\d{9})\b"
-        ),
-
         ["address"] = Extract(
             text,
             @"^\s*(?:adres|address)\s*[:\-]\s*(?<value>[^\r\n]+)"
@@ -127,6 +111,11 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
         ),
 
         ["customerType"] = customerType,
+
+        ["kvk"] = Extract(
+            text,
+            @"^\s*(?:kvk nummer|kvk-nummer|kvk)\s*[:\-]\s*(?<value>\d{8})"
+        ),
 
         ["vat"] = Extract(
             text,
@@ -164,18 +153,9 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
         )
     };
 
-    if (role == "entrepreneur")
-    {
-        fields["kvk"] = Extract(
-            text,
-            @"^\s*(?:kvk nummer|kvk-nummer|kvk)\s*[:\-]\s*(?<value>\d{8})"
-        );
-    }
-
     return Results.Ok(new
     {
         success = true,
-        role,
         mail.ItemId,
         mail.Subject,
         mail.Sender,
@@ -424,7 +404,6 @@ static string HumanizeName(string name)
 
 
 public record MailRequest(
-    string? Role,
     string? ItemId,
     string? Subject,
     string? Sender,
