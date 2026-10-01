@@ -1,9 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-
-<!--
-    Корневой элемент Outlook Add-in.
-    xsi:type="MailApp" говорит Office, что это расширение для Outlook.
--->
 <OfficeApp
     xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -11,451 +6,108 @@
     xmlns:mailappor="http://schemas.microsoft.com/office/mailappversionoverrides/1.0"
     xsi:type="MailApp">
 
-    <!--
-        Уникальный ID нашего Add-in.
-        Это GUID приложения.
-        После начала разработки его лучше больше не менять.
-    -->
     <Id>8a4c9c55-5c61-4c91-8f1d-5d56f5a86c97</Id>
 
-    <!--
-        Версия нашего Outlook Add-in.
-    -->
-    <Version>1.0.0.0</Version>
+    <!-- Подняли версию: Outlook кэширует манифест, так он точно перечитается -->
+    <Version>1.0.0.1</Version>
 
-    <!--
-        Имя разработчика / компании.
-    -->
     <ProviderName>Nidaros</ProviderName>
-
-    <!--
-        Язык по умолчанию.
-    -->
     <DefaultLocale>en-US</DefaultLocale>
-
-    <!--
-        Название Add-in, которое пользователь увидит в Outlook.
-    -->
     <DisplayName DefaultValue="Nidaros Mail Assistant"/>
+    <Description DefaultValue="Analyze the current Outlook message and send selected data to the Nidaros API."/>
 
-    <!--
-        Краткое описание расширения.
-    -->
-    <Description
-        DefaultValue="Analyze the current Outlook message and send selected data to the Nidaros API."/>
+    <IconUrl DefaultValue="https://nidaros.onrender.com/assets/icon-64.png"/>
+    <HighResolutionIconUrl DefaultValue="https://nidaros.onrender.com/assets/icon-128.png"/>
+    <SupportUrl DefaultValue="https://nidaros.onrender.com"/>
 
-    <!--
-        Основная иконка Add-in.
-    -->
-    <IconUrl
-        DefaultValue="https://localhost:3000/assets/icon-64.png"/>
-
-    <!--
-        Иконка высокого разрешения.
-    -->
-    <HighResolutionIconUrl
-        DefaultValue="https://localhost:3000/assets/icon-128.png"/>
-
-    <!--
-        Страница поддержки.
-        Пока во время разработки можно использовать localhost.
-    -->
-    <SupportUrl
-        DefaultValue="https://localhost:3000"/>
-
-    <!--
-        Домены, которые разрешено открывать из Add-in.
-
-        Позже сюда можно добавить:
-        https://api.nidaros.nl
-        https://app.nidaros.nl
-        и т.д.
-    -->
     <AppDomains>
-        <AppDomain>https://localhost:3000</AppDomain>
+        <AppDomain>https://nidaros.onrender.com</AppDomain>
     </AppDomains>
 
-
-    <!-- ====================================================== -->
-    <!-- OUTLOOK                                                -->
-    <!-- ====================================================== -->
-
-    <!--
-        Указываем, что Add-in работает внутри Outlook Mailbox.
-    -->
     <Hosts>
         <Host Name="Mailbox"/>
     </Hosts>
 
-
-    <!-- ====================================================== -->
-    <!-- OFFICE.JS API VERSION                                  -->
-    <!-- ====================================================== -->
-
-    <!--
-        Минимальная версия Outlook JavaScript API.
-
-        Mailbox 1.5 выбрана специально,
-        потому что это соответствует базовому уровню,
-        который мы рассматривали для Exchange / Outlook.
-
-        Если конкретная функция требует 1.8,
-        мы проверим поддержку уже внутри JavaScript.
-    -->
     <Requirements>
         <Sets>
             <Set Name="Mailbox" MinVersion="1.5"/>
         </Sets>
     </Requirements>
 
-
-    <!-- ====================================================== -->
-    <!-- TASK PANE                                              -->
-    <!-- ====================================================== -->
-
-    <!--
-        Определяет страницу, которая будет открываться
-        внутри Outlook в боковой панели.
-    -->
     <FormSettings>
-
-        <!--
-            ItemRead = когда пользователь ЧИТАЕТ письмо.
-        -->
         <Form xsi:type="ItemRead">
-
-            <!--
-                Настройки для Desktop Outlook / Outlook Web.
-            -->
             <DesktopSettings>
-
-                <!--
-                    Наша HTML-страница приложения.
-                -->
-                <SourceLocation
-                    DefaultValue="https://localhost:3000/taskpane.html"/>
-
-                <!--
-                    Высота старого popup/task pane representation.
-                -->
+                <SourceLocation DefaultValue="https://nidaros.onrender.com/taskpane.html"/>
                 <RequestedHeight>450</RequestedHeight>
-
             </DesktopSettings>
-
         </Form>
-
     </FormSettings>
 
-
-    <!-- ====================================================== -->
-    <!-- PERMISSIONS                                            -->
-    <!-- ====================================================== -->
-
-    <!--
-        ReadItem позволяет читать текущее открытое письмо:
-
-        subject
-        sender
-        recipients
-        body
-        itemId
-        attachment metadata
-        и другие свойства текущего письма.
-
-        Нам пока НЕ нужен ReadWriteMailbox,
-        потому что мы не изменяем mailbox.
-    -->
     <Permissions>ReadItem</Permissions>
 
+    <Rule xsi:type="ItemIs" ItemType="Message" FormType="Read"/>
 
-    <!-- ====================================================== -->
-    <!-- ACTIVATION RULE                                        -->
-    <!-- ====================================================== -->
+    <!-- true = Outlook НЕ подсвечивает сущности в письме -->
+    <DisableEntityHighlighting>true</DisableEntityHighlighting>
 
-    <!--
-        Add-in работает только когда открыт email.
-
-        ItemType="Message"
-        FormType="Read"
-
-        То есть:
-        письмо открыто для чтения.
-    -->
-    <Rule
-        xsi:type="ItemIs"
-        ItemType="Message"
-        FormType="Read"/>
-
-
-    <!--
-        Outlook не должен автоматически подсвечивать
-        распознанные сущности внутри письма.
-    -->
-    <DisableEntityHighlighting>false</DisableEntityHighlighting>
-
-
-    <!-- ====================================================== -->
-    <!-- MODERN OUTLOOK COMMANDS                                -->
-    <!-- ====================================================== -->
-
-    <!--
-        VersionOverrides добавляет современные команды Outlook:
-
-        ribbon button
-        task pane
-        icons
-        labels
-
-        Именно этот блок создаёт нашу кнопку в Outlook.
-    -->
     <VersionOverrides
         xmlns="http://schemas.microsoft.com/office/mailappversionoverrides"
         xsi:type="VersionOverridesV1_0">
 
-
-        <!--
-            Минимальная версия Mailbox API
-            для этой части manifest.
-        -->
         <Requirements>
-
             <bt:Sets DefaultMinVersion="1.5">
                 <bt:Set Name="Mailbox"/>
             </bt:Sets>
-
         </Requirements>
 
-
-        <!-- ================================================== -->
-        <!-- OUTLOOK HOST                                       -->
-        <!-- ================================================== -->
-
         <Hosts>
-
             <Host xsi:type="MailHost">
-
-                <!--
-                    Desktop / Web Outlook.
-                -->
                 <DesktopFormFactor>
-
-
-                    <!--
-                        Страница, которую Outlook может загрузить
-                        для выполнения команд.
-
-                        Сейчас ExecuteFunction мы не используем,
-                        но Outlook command manifest использует
-                        FunctionFile как инфраструктурный ресурс.
-                    -->
                     <FunctionFile resid="Commands.Url"/>
 
-
-                    <!-- ====================================== -->
-                    <!-- BUTTON WHEN READING MESSAGE            -->
-                    <!-- ====================================== -->
-
-                    <!--
-                        Добавляем команду в интерфейс чтения письма.
-                    -->
                     <ExtensionPoint xsi:type="MessageReadCommandSurface">
-
-
-                        <!--
-                            Используем стандартную вкладку Outlook.
-                        -->
                         <OfficeTab id="TabDefault">
-
-
-                            <!--
-                                Группа наших команд.
-                            -->
                             <Group id="Nidaros.Group">
-
-
-                                <!--
-                                    Название группы.
-                                    Текст находится ниже в Resources.
-                                -->
                                 <Label resid="Group.Label"/>
-
-
-                                <!--
-                                    Наша кнопка.
-                                -->
-                                <Control
-                                    xsi:type="Button"
-                                    id="Nidaros.OpenTaskpane">
-
-
-                                    <!--
-                                        Текст кнопки.
-                                    -->
+                                <Control xsi:type="Button" id="Nidaros.OpenTaskpane">
                                     <Label resid="Button.Label"/>
-
-
-                                    <!--
-                                        Tooltip при наведении.
-                                    -->
                                     <Supertip>
-
                                         <Title resid="Button.Label"/>
-
-                                        <Description
-                                            resid="Button.Tooltip"/>
-
+                                        <Description resid="Button.Tooltip"/>
                                     </Supertip>
-
-
-                                    <!--
-                                        Иконки кнопки для разных размеров UI.
-                                    -->
                                     <Icon>
-
-                                        <bt:Image
-                                            size="16"
-                                            resid="Icon.16"/>
-
-                                        <bt:Image
-                                            size="32"
-                                            resid="Icon.32"/>
-
-                                        <bt:Image
-                                            size="80"
-                                            resid="Icon.80"/>
-
+                                        <bt:Image size="16" resid="Icon.16"/>
+                                        <bt:Image size="32" resid="Icon.32"/>
+                                        <bt:Image size="80" resid="Icon.80"/>
                                     </Icon>
-
-
-                                    <!--
-                                        Главное действие кнопки.
-
-                                        Нажали кнопку →
-                                        Outlook открывает Task Pane.
-                                    -->
                                     <Action xsi:type="ShowTaskpane">
-
-                                        <!--
-                                            Адрес панели берём из Resources.
-                                        -->
-                                        <SourceLocation
-                                            resid="Taskpane.Url"/>
-
+                                        <SourceLocation resid="Taskpane.Url"/>
                                     </Action>
-
-
                                 </Control>
-
                             </Group>
-
                         </OfficeTab>
-
                     </ExtensionPoint>
-
                 </DesktopFormFactor>
-
             </Host>
-
         </Hosts>
 
-
-        <!-- ================================================== -->
-        <!-- RESOURCES                                          -->
-        <!-- ================================================== -->
-
-        <!--
-            Здесь храним все URL, тексты и изображения,
-            на которые ссылались через resid выше.
-        -->
         <Resources>
-
-
-            <!-- ============================== -->
-            <!-- ICONS                         -->
-            <!-- ============================== -->
-
             <bt:Images>
-
-                <bt:Image
-                    id="Icon.16"
-                    DefaultValue="https://localhost:3000/assets/icon-16.png"/>
-
-                <bt:Image
-                    id="Icon.32"
-                    DefaultValue="https://localhost:3000/assets/icon-32.png"/>
-
-                <bt:Image
-                    id="Icon.80"
-                    DefaultValue="https://localhost:3000/assets/icon-80.png"/>
-
+                <bt:Image id="Icon.16" DefaultValue="https://nidaros.onrender.com/assets/icon-16.png"/>
+                <bt:Image id="Icon.32" DefaultValue="https://nidaros.onrender.com/assets/icon-32.png"/>
+                <bt:Image id="Icon.80" DefaultValue="https://nidaros.onrender.com/assets/icon-80.png"/>
             </bt:Images>
-
-
-            <!-- ============================== -->
-            <!-- URLS                           -->
-            <!-- ============================== -->
-
             <bt:Urls>
-
-                <!--
-                    Основная страница боковой панели.
-                -->
-                <bt:Url
-                    id="Taskpane.Url"
-                    DefaultValue="https://localhost:3000/taskpane.html"/>
-
-
-                <!--
-                    Страница для Outlook commands runtime.
-                -->
-                <bt:Url
-                    id="Commands.Url"
-                    DefaultValue="https://localhost:3000/commands.html"/>
-
+                <bt:Url id="Taskpane.Url" DefaultValue="https://nidaros.onrender.com/taskpane.html"/>
+                <bt:Url id="Commands.Url" DefaultValue="https://nidaros.onrender.com/commands.html"/>
             </bt:Urls>
-
-
-            <!-- ============================== -->
-            <!-- SHORT TEXT                     -->
-            <!-- ============================== -->
-
             <bt:ShortStrings>
-
-                <!--
-                    Название группы.
-                -->
-                <bt:String
-                    id="Group.Label"
-                    DefaultValue="Nidaros"/>
-
-
-                <!--
-                    Название кнопки.
-                -->
-                <bt:String
-                    id="Button.Label"
-                    DefaultValue="Analyze mail"/>
-
+                <bt:String id="Group.Label" DefaultValue="Nidaros"/>
+                <bt:String id="Button.Label" DefaultValue="Analyze mail"/>
             </bt:ShortStrings>
-
-
-            <!-- ============================== -->
-            <!-- LONG TEXT                      -->
-            <!-- ============================== -->
-
             <bt:LongStrings>
-
-                <!--
-                    Tooltip кнопки.
-                -->
-                <bt:String
-                    id="Button.Tooltip"
-                    DefaultValue="Open Nidaros Mail Assistant"/>
-
+                <bt:String id="Button.Tooltip" DefaultValue="Open Nidaros Mail Assistant"/>
             </bt:LongStrings>
-
         </Resources>
-
     </VersionOverrides>
-
 </OfficeApp>

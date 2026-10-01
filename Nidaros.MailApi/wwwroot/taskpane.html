@@ -1,55 +1,266 @@
-
 <!DOCTYPE html>
-<html lang="en">
+<html lang="nl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-
     <title>Nidaros Mail Assistant</title>
-
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 
     <style>
+        * { box-sizing: border-box; }
+
         body {
+            margin: 0;
+            padding: 16px;
             font-family: Arial, sans-serif;
-            padding: 20px;
             color: #242424;
+            background: #fff;
+        }
+
+        h2 { margin: 0 0 8px; }
+        h3 { margin: 20px 0 10px; font-size: 16px; }
+
+        #status {
+            margin: 0 0 16px;
+            color: #666;
+        }
+
+        .roles {
+            display: grid;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .role {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
         }
 
         button {
-            padding: 12px 20px;
+            width: 100%;
+            padding: 12px 16px;
             background: #176b52;
-            color: white;
-            border: none;
+            color: #fff;
+            border: 0;
             border-radius: 6px;
             cursor: pointer;
+            font-weight: 600;
         }
 
         button:disabled {
-            opacity: 0.5;
+            opacity: .5;
             cursor: wait;
         }
 
+        .field {
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #e1e1e1;
+            border-radius: 6px;
+        }
+
+        .field-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .field label {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .field input,
+        .field select {
+            width: 100%;
+            padding: 9px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font: inherit;
+        }
+
+        .confidence {
+            padding: 3px 7px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .neutral { background: #eee; color: #555; }
+        .green { background: #dff4e8; color: #176b52; }
+        .orange { background: #fff0cf; color: #8a5a00; }
+        .red { background: #fde1df; color: #a1261b; }
+
+        .hidden { display: none; }
+
         pre {
+            margin-top: 12px;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 6px;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
-            background: #f3f3f3;
-            padding: 12px;
-            border-radius: 6px;
+            font-size: 12px;
         }
     </style>
 </head>
 
 <body>
     <h2>Nidaros Mail Assistant</h2>
+    <p id="status">Outlook wordt gestart...</p>
 
-    <p id="status">Initializing Outlook...</p>
+    <h3>Type dossier</h3>
 
-    <button id="analyze" disabled>
-        Analyze mail
-    </button>
+    <div class="roles">
+        <label class="role">
+            <input type="radio" name="role" value="student" checked>
+            Student
+        </label>
 
-    <h3>Server response</h3>
+        <label class="role">
+            <input type="radio" name="role" value="entrepreneur">
+            Ondernemer
+        </label>
+
+        <label class="role">
+            <input type="radio" name="role" value="worker">
+            Werknemer
+        </label>
+    </div>
+
+    <button id="analyze" disabled>Gegevens ophalen</button>
+
+    <h3>Gegevens</h3>
+
+    <div id="fields">
+        <div class="field" data-key="name">
+            <div class="field-head">
+                <label for="name">Naam</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="name" type="text">
+        </div>
+
+        <div class="field" data-key="bsn">
+            <div class="field-head">
+                <label for="bsn">BSN</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="bsn" type="text">
+        </div>
+
+        <div class="field" data-key="address">
+            <div class="field-head">
+                <label for="address">Adres</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="address" type="text">
+        </div>
+
+        <div class="field" data-key="postalCode">
+            <div class="field-head">
+                <label for="postalCode">Postcode</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="postalCode" type="text">
+        </div>
+
+        <div class="field" data-key="city">
+            <div class="field-head">
+                <label for="city">Woonplaats</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="city" type="text">
+        </div>
+
+        <div class="field" data-key="iban">
+            <div class="field-head">
+                <label for="iban">IBAN</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="iban" type="text">
+        </div>
+
+        <div class="field" data-key="customerType">
+            <div class="field-head">
+                <label for="customerType">Nieuwe klant of bestaande klant</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <select id="customerType">
+                <option value="">Selecteer...</option>
+                <option value="new">Nieuwe klant</option>
+                <option value="existing">Bestaande klant</option>
+            </select>
+        </div>
+
+        <div id="kvkField" class="field hidden" data-key="kvk">
+            <div class="field-head">
+                <label for="kvk">KVK nummer</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="kvk" type="text">
+        </div>
+
+        <div class="field" data-key="vat">
+            <div class="field-head">
+                <label for="vat">BTW nummer</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="vat" type="text">
+        </div>
+
+        <div class="field" data-key="invoiceNumber">
+            <div class="field-head">
+                <label for="invoiceNumber">Factuurnummer</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="invoiceNumber" type="text">
+        </div>
+
+        <div class="field" data-key="article">
+            <div class="field-head">
+                <label for="article">Welk artikel</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="article" type="text">
+        </div>
+
+        <div class="field" data-key="quantity">
+            <div class="field-head">
+                <label for="quantity">Hoeveelheid</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="quantity" type="text">
+        </div>
+
+        <div class="field" data-key="deliveryDate">
+            <div class="field-head">
+                <label for="deliveryDate">Datum afname</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="deliveryDate" type="date">
+        </div>
+
+        <div class="field" data-key="paymentDueDate">
+            <div class="field-head">
+                <label for="paymentDueDate">Uiterste betalingsdatum</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="paymentDueDate" type="date">
+        </div>
+
+        <div class="field" data-key="paymentArrears">
+            <div class="field-head">
+                <label for="paymentArrears">Betalingsachterstanden binnen de eigen company</label>
+                <span class="confidence neutral">Niet gecontroleerd</span>
+            </div>
+            <input id="paymentArrears" type="text">
+        </div>
+    </div>
 
     <pre id="result"></pre>
 
@@ -57,39 +268,66 @@
         const button = document.getElementById("analyze");
         const status = document.getElementById("status");
         const result = document.getElementById("result");
+        const kvkField = document.getElementById("kvkField");
+
+        const confidenceState = confidence =>
+            confidence === 100
+                ? ["green", "100% zeker"]
+                : confidence >= 75
+                    ? ["orange", `${confidence}% twijfel`]
+                    : confidence > 0
+                        ? ["red", `${confidence}% fout`]
+                        : ["neutral", "Niet gecontroleerd"];
+
+        const setField = (key, field) => {
+            const container = document.querySelector(`[data-key="${key}"]`);
+            const input = document.getElementById(key);
+            const badge = container?.querySelector(".confidence");
+
+            if (!container || !input || !badge) return;
+
+            const confidence = Number(field?.confidence ?? 0);
+            const [state, label] = confidenceState(confidence);
+
+            input.value = field?.value ?? "";
+            badge.className = `confidence ${state}`;
+            badge.textContent = label;
+        };
+
+        document.querySelectorAll('input[name="role"]').forEach(radio => {
+            radio.addEventListener("change", event => {
+                kvkField.classList.toggle("hidden", event.target.value !== "entrepreneur");
+            });
+        });
 
         Office.onReady(info => {
             if (info.host !== Office.HostType.Outlook) {
-                status.textContent = "Open this page in Outlook.";
+                status.textContent = "Open deze pagina in Outlook.";
                 return;
             }
 
-            status.textContent = "Outlook is ready.";
+            status.textContent = "Outlook is klaar.";
             button.disabled = false;
         });
 
         button.addEventListener("click", async () => {
             button.disabled = true;
-            status.textContent = "Processing email...";
+            status.textContent = "Gegevens worden opgehaald...";
             result.textContent = "";
 
             try {
                 const item = Office.context.mailbox.item;
 
                 if (!item) {
-                    throw new Error("No email is selected.");
+                    throw new Error("Geen e-mail geselecteerd.");
                 }
 
                 const body = await new Promise((resolve, reject) => {
                     item.body.getAsync(
                         Office.CoercionType.Text,
-                        response => {
-                            if (response.status === Office.AsyncResultStatus.Succeeded) {
-                                resolve(response.value);
-                            } else {
-                                reject(new Error(response.error.message));
-                            }
-                        }
+                        response => response.status === Office.AsyncResultStatus.Succeeded
+                            ? resolve(response.value)
+                            : reject(new Error(response.error.message))
                     );
                 });
 
@@ -99,6 +337,7 @@
                         "Content-Type": "application/json"
                     },
                     body: JSON.stringify({
+                        role: document.querySelector('input[name="role"]:checked').value,
                         itemId: item.itemId,
                         subject: item.subject,
                         sender: item.from?.emailAddress,
@@ -116,18 +355,20 @@
                     throw new Error(`Server error: ${response.status}`);
                 }
 
-                result.textContent = JSON.stringify(
-                    await response.json(),
-                    null,
-                    2
-                );
+                const data = await response.json();
 
-                status.textContent = "Email processed successfully.";
+                Object.entries(data.fields ?? {}).forEach(([key, field]) => {
+                    setField(key, field);
+                });
 
+                result.textContent = JSON.stringify(data, null, 2);
+
+                status.textContent = data.fields
+                    ? "Gegevens ontvangen en gecontroleerd."
+                    : "Server werkt. Veldextractie moet nog aan de API worden toegevoegd.";
             } catch (error) {
-                status.textContent = "Error";
+                status.textContent = "Fout";
                 result.textContent = error.message;
-
             } finally {
                 button.disabled = false;
             }
