@@ -220,6 +220,127 @@
             overflow-wrap: anywhere;
             font-size: 12px;
         }
+
+        /* Bedieningselementen die tijdens het laden geblokkeerd worden */
+        fieldset.plain {
+            margin: 0;
+            padding: 0;
+            border: 0;
+            min-width: 0;
+        }
+
+        /* Keuze: welke velden moeten terugkomen */
+        .pick-box {
+            margin: 0 0 16px;
+        }
+
+        .pick-box summary {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .pick-count {
+            font-weight: 400;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .pick-tools {
+            display: flex;
+            gap: 14px;
+            padding: 0 10px 6px;
+        }
+
+        .link-button {
+            width: auto;
+            padding: 0;
+            background: none;
+            color: #176b52;
+            font-weight: 600;
+            font-size: 12px;
+            text-decoration: underline;
+        }
+
+        .field-picker {
+            display: grid;
+            gap: 2px;
+            padding: 0 10px 10px;
+        }
+
+        .field-picker label {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            padding: 5px 4px;
+            border-radius: 4px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .field-picker label:hover { background: #f4f4f4; }
+
+        .field-picker input { margin: 0; flex: none; }
+
+        /* Knoppen */
+        .actions {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+        }
+
+        .actions .secondary {
+            padding: 12px 14px;
+            font-size: 14px;
+        }
+
+        button.secondary:disabled { opacity: .45; }
+
+        button.danger {
+            background: #fff;
+            color: #a1261b;
+            border: 1px solid #e0b4af;
+        }
+
+        /* Laadbalk */
+        .progress {
+            display: grid;
+            gap: 8px;
+        }
+
+        .progress-track {
+            height: 14px;
+            border: 2px solid #242424;
+            border-radius: 4px;
+            overflow: hidden;
+            background: #fff;
+        }
+
+        .progress-fill {
+            width: 0;
+            height: 100%;
+            background: repeating-linear-gradient(-45deg, #176b52 0 6px, #3fa384 6px 12px);
+            background-size: 17px 17px;
+            transition: width .25s ease;
+            animation: stripes .8s linear infinite;
+        }
+
+        @keyframes stripes {
+            to { background-position: 17px 0; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .progress-fill { animation: none; transition: none; }
+        }
+
+        .progress-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 13px;
+            color: #176b52;
+            font-weight: 600;
+        }
     </style>
 </head>
 
@@ -227,6 +348,7 @@
     <h2>Nidaros Mail Assistant</h2>
     <p id="status">Outlook wordt gestart...</p>
 
+    <fieldset id="controls" class="plain">
     <h3>Bron van bestanden (PDF / DOCX / XML)</h3>
 
     <div class="files-box">
@@ -257,7 +379,35 @@
         <p class="hint">Maximaal 10 MB per bestand. Gescande PDF's zonder tekstlaag worden niet gelezen.</p>
     </div>
 
-    <button id="analyze" disabled>Gegevens ophalen</button>
+    <details id="pickBox" class="pick-box">
+        <summary>
+            Velden die terug moeten komen
+            <span id="pickCount" class="pick-count"></span>
+        </summary>
+        <div class="pick-tools">
+            <button type="button" class="link-button" data-pick="all">Alles</button>
+            <button type="button" class="link-button" data-pick="none">Niets</button>
+        </div>
+        <div id="fieldPicker" class="field-picker"></div>
+    </details>
+    </fieldset>
+
+    <div id="actions" class="actions">
+        <button id="analyze" type="button" disabled>Gegevens ophalen</button>
+        <button id="reset" type="button" class="secondary" disabled>Annuleren</button>
+    </div>
+
+    <div id="progress" class="progress hidden" role="status" aria-live="polite">
+        <div class="progress-track" role="progressbar" aria-label="Voortgang"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <div class="progress-row">
+            <span id="progressLabel">Bezig...</span>
+            <span id="progressPct">0%</span>
+        </div>
+        <button id="abort" type="button" class="danger">Afbreken</button>
+    </div>
 
     <h3>Gegevens</h3>
 
@@ -299,6 +449,7 @@
         };
 
         const button = document.getElementById("analyze");
+        let officeReady = false;
         const status = document.getElementById("status");
         const result = document.getElementById("result");
         const fieldsBox = document.getElementById("fields");
@@ -373,6 +524,66 @@
         };
 
         const resetFields = () => FIELDS.forEach(([key]) => setField(key, null));
+
+        // ── Welke velden moeten terugkomen ──────────────────────────
+        // Keuze wordt onthouden in deze browser (Outlook) — niet kritisch als dat mislukt.
+        const PICK_STORAGE_KEY = "nidaros.requiredFields";
+        const fieldPicker = document.getElementById("fieldPicker");
+        const pickCount = document.getElementById("pickCount");
+
+        const loadRequired = () => {
+            try {
+                const saved = JSON.parse(localStorage.getItem(PICK_STORAGE_KEY) ?? "null");
+                const known = new Set(FIELDS.map(([key]) => key));
+                if (Array.isArray(saved)) return new Set(saved.filter(k => known.has(k)));
+            } catch { /* geen opslag beschikbaar */ }
+            return new Set(FIELDS.map(([key]) => key));
+        };
+
+        const required = loadRequired();
+
+        const saveRequired = () => {
+            try { localStorage.setItem(PICK_STORAGE_KEY, JSON.stringify([...required])); }
+            catch { /* negeren */ }
+        };
+
+        FIELDS.forEach(([key, label]) => {
+            const row = document.createElement("label");
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            box.value = key;
+            box.checked = required.has(key);
+            box.addEventListener("change", () => {
+                box.checked ? required.add(key) : required.delete(key);
+                applyRequired();
+            });
+            row.append(box, document.createTextNode(label));
+            fieldPicker.append(row);
+        });
+
+        // Toon alleen gekozen velden, werk teller en knop bij
+        const applyRequired = () => {
+            saveRequired();
+
+            fieldPicker.querySelectorAll("input").forEach(box => { box.checked = required.has(box.value); });
+            FIELDS.forEach(([key]) =>
+                fieldsBox.querySelector(`[data-key="${key}"]`).classList.toggle("hidden", !required.has(key)));
+
+            pickCount.textContent = `${required.size} van ${FIELDS.length}`;
+            button.disabled = !officeReady || required.size === 0;
+
+            if (officeReady && required.size === 0) {
+                setStatus("Kies minstens één veld.", true);
+            } else if (officeReady && status.classList.contains("error") && status.textContent === "Kies minstens één veld.") {
+                setStatus("Outlook is klaar.");
+            }
+        };
+
+        document.querySelectorAll("[data-pick]").forEach(link => link.addEventListener("click", () => {
+            required.clear();
+            if (link.dataset.pick === "all") FIELDS.forEach(([key]) => required.add(key));
+            applyRequired();
+        }));
 
         // PDF, DOCX, XML (oude .doc niet)
         const isSupported = (name = "", type = "") =>
@@ -600,13 +811,86 @@
                 return;
             }
 
+            officeReady = true;
             setStatus("Outlook is klaar.");
-            button.disabled = false;
             previewSelection();
+            applyRequired();
         });
 
+        // ── Laden, voortgang, afbreken ──────────────────────────────
+        const controls = document.getElementById("controls");
+        const actions = document.getElementById("actions");
+        const resetButton = document.getElementById("reset");
+        const progress = document.getElementById("progress");
+        const progressTrack = progress.querySelector(".progress-track");
+        const progressFill = document.getElementById("progressFill");
+        const progressLabel = document.getElementById("progressLabel");
+        const progressPct = document.getElementById("progressPct");
+        const abortButton = document.getElementById("abort");
+
+        class Cancelled extends Error {}
+
+        // Huidige run: { cancelled, xhr }. Eén tegelijk.
+        let run = null;
+
+        const setProgress = (percent, label) => {
+            const value = Math.max(0, Math.min(100, Math.round(percent)));
+            progressFill.style.width = `${value}%`;
+            progressTrack.setAttribute("aria-valuenow", String(value));
+            progressPct.textContent = `${value}%`;
+            if (label) progressLabel.textContent = label;
+        };
+
+        const setBusy = busy => {
+            controls.disabled = busy;
+            actions.classList.toggle("hidden", busy);
+            progress.classList.toggle("hidden", !busy);
+            abortButton.disabled = false;
+            abortButton.textContent = "Afbreken";
+        };
+
+        // Gooit Cancelled als de gebruiker intussen op "Afbreken" heeft gedrukt
+        const checkCancelled = current => {
+            if (current.cancelled) throw new Cancelled();
+        };
+
+        // XHR i.p.v. fetch: geeft echte upload-voortgang én kan worden afgebroken
+        const postJson = (url, payload, current, onUpload) => new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            current.xhr = xhr;
+
+            xhr.open("POST", url);
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.timeout = 120000;
+
+            xhr.upload.onprogress = e => { if (e.lengthComputable) onUpload(e.loaded / e.total); };
+            xhr.upload.onload = () => onUpload(1);
+
+            xhr.onload = () => {
+                let data = null;
+                try { data = JSON.parse(xhr.responseText); } catch { /* geen JSON */ }
+                resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, statusText: xhr.statusText, data });
+            };
+            xhr.onerror = () => reject(new Error("Netwerkfout: de server is niet bereikbaar."));
+            xhr.ontimeout = () => reject(new Error("De server reageert niet (time-out)."));
+            xhr.onabort = () => reject(new Cancelled());
+
+            xhr.send(JSON.stringify(payload));
+        });
+
+        const countFound = data =>
+            Object.values(data?.fields ?? {}).filter(f => f.confidence === 100).length;
+
         button.addEventListener("click", async () => {
-            button.disabled = true;
+            const current = { cancelled: false, xhr: null };
+            run = current;
+
+            setBusy(true);
+            setProgress(0, "Starten...");
+
+            // Lijst met velden inklappen, zodat de laadbalk en resultaten in beeld zijn
+            document.getElementById("pickBox").open = false;
+            progress.scrollIntoView({ block: "nearest" });
             setStatus("Gegevens worden opgehaald...");
             resetFields();
             fileNotes = new Map();
@@ -620,6 +904,7 @@
                     throw new Error("Geen e-mail geselecteerd.");
                 }
 
+                setProgress(5, "E-mail lezen...");
                 const body = await new Promise((resolve, reject) => {
                     item.body.getAsync(
                         Office.CoercionType.Text,
@@ -628,40 +913,44 @@
                             : reject(new Error(response.error.message))
                     );
                 });
+                checkCancelled(current);
 
-                setStatus("Bestanden worden gelezen...");
+                setProgress(15, fileMode() === "mail" ? "Bijlage lezen..." : "Bestand lezen...");
                 const { files, keys } = await collectFiles(item);
+                checkCancelled(current);
 
-                setStatus("Gegevens worden geanalyseerd...");
-
-                const response = await fetch("/api/mail/analyze", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        itemId: item.itemId,
-                        subject: item.subject,
-                        sender: item.from?.emailAddress,
-                        body,
-                        attachments: (item.attachments ?? []).map(file => ({
-                            id: file.id,
-                            name: file.name,
-                            size: file.size,
-                            contentType: file.contentType ?? ""
-                        })),
-                        files
-                    })
+                // 30–80%: echte upload-voortgang
+                setProgress(30, files.length ? "Bestand versturen..." : "Versturen...");
+                const response = await postJson("/api/mail/analyze", {
+                    itemId: item.itemId,
+                    subject: item.subject,
+                    sender: item.from?.emailAddress,
+                    body,
+                    attachments: (item.attachments ?? []).map(file => ({
+                        id: file.id,
+                        name: file.name,
+                        size: file.size,
+                        contentType: file.contentType ?? ""
+                    })),
+                    files,
+                    requestedFields: FIELDS.map(([key]) => key).filter(key => required.has(key))
+                }, current, fraction => {
+                    setProgress(30 + fraction * 50, fraction < 1 ? "Bestand versturen..." : "Gegevens worden geanalyseerd...");
                 });
+                checkCancelled(current);
 
-                const data = await response.json().catch(() => null);
+                const data = response.data;
 
                 if (!response.ok) {
                     result.textContent = data ? JSON.stringify(data, null, 2) : "";
                     throw new Error(`Server error ${response.status}: ${data?.error ?? response.statusText}`);
                 }
 
+                setProgress(100, "Klaar");
+
                 FIELDS.forEach(([key]) => setField(key, data?.fields?.[key]));
 
-                // Resultaat per bestand naast het juiste vinkje tonen
+                // Resultaat naast het gekozen bestand tonen
                 fileNotes = new Map((data.files ?? []).map((f, i) => [keys[i], {
                     text: f.error ? `fout: ${f.error}` : `${f.characters} tekens gelezen`,
                     error: Boolean(f.error)
@@ -670,16 +959,52 @@
 
                 result.textContent = JSON.stringify(data, null, 2);
 
+                const total = Object.keys(data.fields ?? {}).length;
                 setStatus(data.readyToSend
-                    ? "Alle gegevens gevonden."
-                    : "Gegevens ontvangen. Controleer de velden zonder groen label.");
+                    ? `Alle verplichte velden gevonden (${total} van ${total}).`
+                    : `${countFound(data)} van ${total} verplichte velden zeker gevonden. Controleer de velden zonder groen label.`);
             } catch (error) {
-                setStatus(error.message, true);
-                if (result.textContent === "Bezig...") result.textContent = error.message;
+                if (error instanceof Cancelled) {
+                    // Afgebroken: velden leeg laten, niets half tonen
+                    resetFields();
+                    fileNotes = new Map();
+                    previewSelection();
+                    result.textContent = "Afgebroken.";
+                    setStatus("Laden afgebroken.");
+                } else if (run === current) {
+                    setStatus(error.message, true);
+                    if (result.textContent === "Bezig...") result.textContent = error.message;
+                }
             } finally {
-                button.disabled = false;
+                if (run === current) {
+                    run = null;
+                    setBusy(false);
+                    resetButton.disabled = false;
+                }
             }
         });
+
+        // "Afbreken": stopt de lopende aanvraag. Office.js-aanroepen zelf kunnen niet
+        // worden gestopt, maar hun resultaat wordt dan genegeerd.
+        abortButton.addEventListener("click", () => {
+            if (!run) return;
+            run.cancelled = true;
+            abortButton.disabled = true;
+            abortButton.textContent = "Afbreken...";
+            run.xhr?.abort();
+        });
+
+        // "Annuleren": alles terug naar de beginstand (veldkeuze blijft bewaard)
+        resetButton.addEventListener("click", () => {
+            resetFields();
+            fileNotes = new Map();
+            previewSelection();
+            result.textContent = "Nog geen gegevens.";
+            setStatus("Outlook is klaar.");
+            resetButton.disabled = true;
+        });
+
+        applyRequired();
     </script>
 </body>
 </html>

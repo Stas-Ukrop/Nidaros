@@ -44,6 +44,23 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
         });
     }
 
+    // Какие поля искать. Пусто/null — все поля.
+    var knownKeys = FieldSpecs().Select(f => f.Key).ToArray();
+    var requested = (mail.RequestedFields ?? [])
+        .Where(k => !string.IsNullOrWhiteSpace(k))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    var unknown = requested.Where(k => !knownKeys.Contains(k)).ToArray();
+
+    if (unknown.Length > 0)
+    {
+        return Results.BadRequest(new
+        {
+            error = $"Unknown fields: {string.Join(", ", unknown)}."
+        });
+    }
+
     // Текст письма + текст всех файлов
     var combined = new StringBuilder(mail.Body?.Trim() ?? "");
     var fileResults = new List<FileProcessResult>();
@@ -67,7 +84,7 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
 
     var text = NormalizeText(combined.ToString());
 
-    var fields = ExtractFields(text);
+    var fields = ExtractFields(text, requested.Length > 0 ? requested : knownKeys);
 
     return Results.Ok(new
     {
@@ -79,6 +96,7 @@ app.MapPost("/api/mail/analyze", (MailRequest mail) =>
         attachments = mail.Attachments,
         attachmentCount = mail.Attachments?.Length ?? 0,
         files = fileResults,
+        requestedFields = fields.Keys,
         readyToSend = fields.Values.All(field => field.Confidence == 100),
         // Для отладки: какой текст сервер реально увидел
         extractedText = text.Length > 5000 ? text[..5000] + "…" : text,
@@ -155,7 +173,7 @@ static FieldSpec[] FieldSpecs() =>
 ];
 
 
-static Dictionary<string, FieldResult> ExtractFields(string text)
+static Dictionary<string, FieldResult> ExtractFields(string text, IReadOnlyCollection<string> keys)
 {
     // Метки, которые не являются нашими полями, но тоже не могут быть значением
     // (иначе при пустом "Naam" значением станет следующая строка "BSN")
@@ -165,7 +183,10 @@ static Dictionary<string, FieldResult> ExtractFields(string text)
     var specs = FieldSpecs();
     var allLabels = string.Join("|", specs.Select(s => s.Labels).Append(otherLabels));
 
-    return specs.ToDictionary(s => s.Key, s => Field(text, s, allLabels));
+    // Метки всех полей участвуют в allLabels, даже если поле не запрошено
+    return specs
+        .Where(s => keys.Contains(s.Key))
+        .ToDictionary(s => s.Key, s => Field(text, s, allLabels));
 }
 
 
@@ -791,7 +812,8 @@ public record MailRequest(
     string? Sender,
     string? Body,
     MailAttachment[]? Attachments,
-    UploadedFile[]? Files
+    UploadedFile[]? Files,
+    string[]? RequestedFields // какие поля обязательно вернуть; пусто = все
 );
 
 public record MailAttachment(
