@@ -99,6 +99,10 @@
 
         .hidden { display: none !important; }
 
+        /* Diagnose: welke e-mail ziet het paneel, komt "andere e-mail" binnen */
+        .sync-info { margin: -4px 0 8px; overflow-wrap: anywhere; }
+        .sync-info.off { color: #a1261b; font-weight: 600; }
+
         .files-box input[type="file"] {
             width: 100%;
             font: inherit;
@@ -417,6 +421,7 @@
 
 <body>
     <h2>Nidaros Mail Assistant</h2>
+    <p id="syncInfo" class="hint sync-info">Paneel v4</p>
     <p id="status">Outlook wordt gestart...</p>
     <ul id="notices"></ul>
 
@@ -908,37 +913,6 @@
             setTimeout(() => { copyJson.textContent = "Kopiëren"; }, 2000);
         });
 
-        Office.onReady(info => {
-            if (info.host !== Office.HostType.Outlook) {
-                setStatus("Open deze pagina in Outlook.");
-                return;
-            }
-
-            officeReady = true;
-            setStatus(hasItem() ? "Outlook is klaar." : "Selecteer een e-mail.");
-            currentItemId = itemIdentity();
-            previewSelection();
-            applyRequired();
-            renderBuffer();
-
-            // Vastgezet (pinned) paneel: Outlook wisselt de e-mail zonder het paneel te herladen.
-            // Zonder deze handler blijft de lijst met bijlagen van de vorige e-mail staan.
-            if (Office.context.mailbox.addHandlerAsync && Office.EventType?.ItemChanged) {
-                Office.context.mailbox.addHandlerAsync(Office.EventType.ItemChanged, onItemChanged, eventResult => {
-                    if (eventResult.status !== Office.AsyncResultStatus.Succeeded) {
-                        console.warn("ItemChanged niet beschikbaar:", eventResult.error?.message);
-                    }
-                });
-            }
-
-            // Reserve voor clients die ItemChanged niet altijd uitsturen.
-            // Alleen een gewijzigde mailbox.item wordt opgemerkt; een oude, bevroren
-            // Office.js-context kan door de webpagina niet worden vernieuwd.
-            setInterval(() => {
-                if (officeReady && itemIdentity() !== currentItemId) onItemChanged();
-            }, 1500);
-        });
-
         // ── Andere e-mail geselecteerd ──────────────────────────────
         let currentItemId = null;
 
@@ -951,10 +925,18 @@
             return item.itemId ?? `${item.subject ?? ""}|${item.from?.emailAddress ?? ""}`;
         };
 
-        const onItemChanged = (force = false) => {
+        // via: "event" (Outlook ItemChanged), "controle" (periodieke controle), "knop" (Vernieuw)
+        let switchCount = 0;
+        let lastSwitch = "";
+
+        const onItemChanged = (force = false, via = "controle") => {
             const id = itemIdentity();
             if (!force && id === currentItemId) return;
             currentItemId = id;
+
+            switchCount++;
+            lastSwitch = `${via} ${new Date().toLocaleTimeString("nl-NL")}`;
+            updateSyncInfo();
 
             // Lopende aanvraag hoort bij de vorige e-mail: stoppen, resultaat negeren
             if (run) {
@@ -980,11 +962,11 @@
 
         // Reserve: sommige Outlook-versies sturen ItemChanged niet; bij terugkeer naar het paneel controleren
         document.getElementById("refreshMail").addEventListener("click", () => {
-            if (officeReady) onItemChanged(true);
+            if (officeReady) onItemChanged(true, "knop");
         });
-        window.addEventListener("focus", () => { if (officeReady) onItemChanged(); });
+        window.addEventListener("focus", () => { if (officeReady) onItemChanged(false, "controle"); });
         document.addEventListener("visibilitychange", () => {
-            if (officeReady && document.visibilityState === "visible") onItemChanged();
+            if (officeReady && document.visibilityState === "visible") onItemChanged(false, "controle");
         });
 
         // ── Laden, voortgang, afbreken ──────────────────────────────
@@ -1374,8 +1356,71 @@
             copyText(text, copyBufferButton, "Alles kopiëren");
         });
 
+        // ── Diagnose ───────────────────────────────────────────────
+        // Toont welke e-mail het paneel ziet en of "andere e-mail" binnenkomt.
+        // Staat hier het onderwerp van de VORIGE e-mail, dan geeft Outlook het paneel de nieuwe
+        // e-mail niet: paneel niet vastgezet (punaise) of oude manifest nog actief.
+        const PANEL_VERSION = "4";
+        const syncInfo = document.getElementById("syncInfo");
+        let eventState = "wordt gestart";
+
+        const updateSyncInfo = () => {
+            const item = Office.context?.mailbox?.item;
+            const mail = item ? `"${item.subject || "(geen onderwerp)"}"` : "geen";
+            const switches = switchCount ? ` · wissels: ${switchCount} (laatste: ${lastSwitch})` : "";
+            syncInfo.textContent = `Paneel v${PANEL_VERSION} · e-mail: ${mail} · ItemChanged: ${eventState}${switches}`;
+            syncInfo.classList.toggle("off", eventState !== "aan" && eventState !== "wordt gestart");
+        };
+
+        // ── Start ──────────────────────────────────────────────────
+        // Office.onReady staat helemaal onderaan: alle functies en variabelen hierboven bestaan dan al.
+        // (Office kan onReady direct aanroepen als het al klaar is; eerder in het script geeft dat
+        // "Cannot access ... before initialization" en wordt ItemChanged stilletjes niet geregistreerd.)
         renderBuffer();
         applyRequired();
+
+        Office.onReady(info => {
+            if (info.host !== Office.HostType.Outlook) {
+                setStatus("Open deze pagina in Outlook.");
+                return;
+            }
+
+            officeReady = true;
+            setStatus(hasItem() ? "Outlook is klaar." : "Selecteer een e-mail.");
+            currentItemId = itemIdentity();
+            previewSelection();
+            applyRequired();
+            renderBuffer();
+            updateSyncInfo();
+
+            // Vastgezet (pinned) paneel: Outlook wisselt de e-mail zonder het paneel te herladen.
+            const mailbox = Office.context.mailbox;
+
+            if (!mailbox?.addHandlerAsync || !Office.EventType?.ItemChanged) {
+                eventState = "niet ondersteund";
+                updateSyncInfo();
+            } else {
+                try {
+                    // Outlook geeft een event-object mee; dat is GEEN "force" — daarom een eigen functie
+                    mailbox.addHandlerAsync(Office.EventType.ItemChanged, () => onItemChanged(true, "event"), eventResult => {
+                        eventState = eventResult?.status === Office.AsyncResultStatus.Succeeded
+                            ? "aan"
+                            : `fout: ${eventResult?.error?.message ?? "registratie mislukt"}`;
+                        updateSyncInfo();
+                    });
+                } catch (error) {
+                    eventState = `fout: ${error.message}`;
+                    updateSyncInfo();
+                }
+            }
+
+            // Reserve voor clients die ItemChanged niet altijd uitsturen.
+            // Alleen een gewijzigde mailbox.item wordt opgemerkt; een oude, bevroren
+            // Office.js-context kan door de webpagina niet worden vernieuwd.
+            setInterval(() => {
+                if (officeReady && !document.hidden && itemIdentity() !== currentItemId) onItemChanged(false, "controle");
+            }, 1500);
+        });
     </script>
 </body>
 </html>
