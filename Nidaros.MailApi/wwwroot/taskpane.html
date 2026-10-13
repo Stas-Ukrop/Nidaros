@@ -27,6 +27,21 @@
 
         #status.error { color: #a1261b; font-weight: 600; }
 
+        /* Waarom niet klaar (issues) en aandachtspunten (warnings) van de server */
+        #notices {
+            margin: -8px 0 16px;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 4px;
+            font-size: 12px;
+        }
+
+        #notices:empty { display: none; }
+        #notices li { padding: 6px 8px; border-radius: 5px; }
+        #notices li.issue { background: #fde1df; color: #a1261b; }
+        #notices li.warning { background: #fff0cf; color: #8a5a00; }
+
         button {
             width: 100%;
             padding: 12px 16px;
@@ -347,6 +362,7 @@
 <body>
     <h2>Nidaros Mail Assistant</h2>
     <p id="status">Outlook wordt gestart...</p>
+    <ul id="notices"></ul>
 
     <fieldset id="controls" class="plain">
     <h3>Bron van bestanden (PDF / DOCX / XML)</h3>
@@ -490,14 +506,31 @@
             fieldsBox.append(field);
         });
 
-        const confidenceState = confidence =>
-            confidence === 100
-                ? ["green", "100% zeker"]
-                : confidence >= 75
-                    ? ["orange", `${confidence}% twijfel`]
-                    : confidence > 0
-                        ? ["red", "Niet gevonden"]
-                        : ["neutral", "Niet gecontroleerd"];
+        // Label op basis van de status van de server. Confidence zegt alleen HOE een waarde
+        // gevonden is (label, adresblok, volgende regel), niet hoe zeker die is.
+        const STATUS_BADGES = {
+            found:    ["green",  "Gevonden"],
+            review:   ["orange", "Controleren"],
+            guessed:  ["orange", "Twijfel, controleren"],
+            invalid:  ["red",    "Ongeldig"],
+            conflict: ["red",    "Verschillende waarden"],
+            missing:  ["red",    "Niet gevonden"],
+            error:    ["red",    "Fout"]
+        };
+
+        const badgeFor = field => field
+            ? STATUS_BADGES[field.status] ?? ["orange", "Controleren"]
+            : ["neutral", "Niet gecontroleerd"];
+
+        // Bij "conflict": de waarden per document tonen, de gebruiker kiest zelf
+        const noteFor = field => {
+            if (!field || field.status === "missing") return "";
+            if (field.status === "conflict" && field.alternatives?.length) {
+                const options = field.alternatives.map(a => `${a.source}: ${a.value || "—"}`).join(" · ");
+                return `${field.note ?? ""} ${options}`.trim();
+            }
+            return field.note ?? "";
+        };
 
         const setField = (key, field) => {
             const container = fieldsBox.querySelector(`[data-key="${key}"]`);
@@ -514,11 +547,9 @@
             valueEl.classList.toggle("empty", !value);
 
             // Uitleg van de server (bv. "IBAN-controlegetal klopt niet."), niet bij "missing"
-            noteEl.textContent = field?.status !== "missing" ? (field?.note ?? "") : "";
+            noteEl.textContent = noteFor(field);
 
-            const [state, label] = field?.status === "error"
-                ? ["red", "Fout"]
-                : confidenceState(Number(field?.confidence ?? 0));
+            const [state, label] = badgeFor(field);
             badge.className = `confidence ${state}`;
             badge.textContent = label;
         };
@@ -879,7 +910,20 @@
         });
 
         const countFound = data =>
-            Object.values(data?.fields ?? {}).filter(f => f.confidence === 100).length;
+            Object.values(data?.fields ?? {}).filter(f => f.status === "found").length;
+
+        // Waarom niet klaar (issues, rood) en aandachtspunten (warnings, geel)
+        const notices = document.getElementById("notices");
+        const showNotices = (issues = [], warnings = []) => {
+            notices.innerHTML = "";
+            [...issues.map(text => ["issue", text]), ...warnings.map(text => ["warning", text])]
+                .forEach(([kind, text]) => {
+                    const li = document.createElement("li");
+                    li.className = kind;
+                    li.textContent = text;
+                    notices.append(li);
+                });
+        };
 
         button.addEventListener("click", async () => {
             const current = { cancelled: false, xhr: null };
@@ -892,6 +936,7 @@
             document.getElementById("pickBox").open = false;
             progress.scrollIntoView({ block: "nearest" });
             setStatus("Gegevens worden opgehaald...");
+            showNotices();
             resetFields();
             fileNotes = new Map();
             previewSelection();
@@ -962,7 +1007,8 @@
                 const total = Object.keys(data.fields ?? {}).length;
                 setStatus(data.readyToSend
                     ? `Alle verplichte velden gevonden (${total} van ${total}).`
-                    : `${countFound(data)} van ${total} verplichte velden zeker gevonden. Controleer de velden zonder groen label.`);
+                    : `${countFound(data)} van ${total} verplichte velden gevonden. Controleer de velden zonder groen label.`);
+                showNotices(data.issues, data.warnings);
             } catch (error) {
                 if (error instanceof Cancelled) {
                     // Afgebroken: velden leeg laten, niets half tonen
@@ -996,6 +1042,7 @@
 
         // "Annuleren": alles terug naar de beginstand (veldkeuze blijft bewaard)
         resetButton.addEventListener("click", () => {
+            showNotices();
             resetFields();
             fileNotes = new Map();
             previewSelection();
