@@ -2175,14 +2175,14 @@ public record FieldSpec(
     public const string AmountPattern = @"(?:€|EUR)?[ \t]*-?\d[\d.,]*";
 }
 
-// Результат проверки: Problem → invalid, Warning → значение принято, но с пометкой
+/// Результат проверки: Problem → invalid, Warning → значение принято, но с пометкой
 public record Check(string Value, string? Problem = null, string? Warning = null);
 
-// Status: found | review (сомнительно, проверить) | guessed (без метки) | invalid | missing
-//         | conflict (документы противоречат друг другу или это разные фактуры)
-// Method: label | nextLine | context | structure | pattern | none — КАК найдено значение
-// Confidence: порядковая оценка способа извлечения, НЕ вероятность. readyToSend её не использует.
-// Source — из какого документа значение ("E-mail", имя файла; несколько — через запятую)
+/// Status: found | review (сомнительно, проверить) | guessed (без метки) | invalid | missing
+///         | conflict (документы противоречат друг другу или это разные фактуры)
+/// Method: label | nextLine | context | structure | pattern | none — КАК найдено значение
+/// Confidence: порядковая оценка способа извлечения, НЕ вероятность. readyToSend её не использует.
+/// Source — из какого документа значение ("E-mail", имя файла; несколько — через запятую)
 public record FieldResult(
     string Value,
     int Confidence,
@@ -2197,14 +2197,14 @@ public record FieldAlternative(string Value, string Source, string Status);
 
 public record Derived(string Value, int Confidence, string Note, bool NeedsReview = false);
 
-// Признаки фактуры: номер (нормализованный) и реквизиты поставщика (kvk / vat / name)
+/// Признаки фактуры: номер (нормализованный) и реквизиты поставщика (kvk / vat / name)
 public record InvoiceKey(string? Number, Dictionary<string, string> Supplier);
 
 public record InvoiceLine(string? Date, string? Quantity, string? Article, decimal? UnitPrice, decimal? Total);
 
 public record AddressBlock(string Name, string Street, string PostalCode, string City, int Line);
 
-// FieldText — текст без строк таблицы позиций (для поиска по меткам)
+/// FieldText — текст без строк таблицы позиций (для поиска по меткам)
 public record DocumentModel(
     string Text,
     string FieldText,

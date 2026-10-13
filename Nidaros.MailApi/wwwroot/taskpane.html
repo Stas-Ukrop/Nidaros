@@ -317,6 +317,62 @@
             border: 1px solid #e0b4af;
         }
 
+        /* Buffer: bewaarde gegevens, blijven staan bij een andere e-mail */
+        .buffer {
+            margin-top: 16px;
+            padding: 10px;
+            border: 1px solid #b9d9cc;
+            border-radius: 6px;
+            background: #f6fbf9;
+            display: grid;
+            gap: 10px;
+        }
+
+        .buffer-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 8px;
+        }
+
+        .buffer-head h3 { margin: 0; }
+
+        .buffer-meta { font-size: 12px; color: #666; }
+
+        .buffer-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .buffer-actions button { padding: 10px 12px; font-size: 13px; }
+
+        #bufferList {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 6px;
+        }
+
+        #bufferList li {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 2px 8px;
+            align-items: center;
+            padding: 6px 8px;
+            background: #fff;
+            border: 1px solid #e1e1e1;
+            border-radius: 5px;
+        }
+
+        .buffer-label { font-size: 12px; font-weight: 600; color: #555; }
+        .buffer-value { font-size: 14px; overflow-wrap: anywhere; }
+        .buffer-source { grid-column: 1 / -1; font-size: 11px; color: #777; overflow-wrap: anywhere; }
+        .buffer-empty { margin: 0; font-size: 12px; color: #777; }
+
+        #bufferList button.secondary { grid-row: 1 / span 2; grid-column: 2; }
+
         /* Laadbalk */
         .progress {
             display: grid;
@@ -429,6 +485,21 @@
 
     <!-- Velden worden uit FIELDS gegenereerd -->
     <div id="fields"></div>
+
+    <!-- Buffer: blijft bewaard bij het wisselen van e-mail en na herstart van het paneel -->
+    <section class="buffer" aria-labelledby="bufferTitle">
+        <div class="buffer-head">
+            <h3 id="bufferTitle">Buffer</h3>
+            <span id="bufferMeta" class="buffer-meta"></span>
+        </div>
+        <div class="buffer-actions">
+            <button id="saveBuffer" type="button" disabled>Opslaan in buffer</button>
+            <button id="clearBuffer" type="button" class="secondary danger" disabled>Buffer wissen</button>
+        </div>
+        <ul id="bufferList"></ul>
+        <p id="bufferEmpty" class="buffer-empty">Leeg. Haal gegevens op en klik op "Opslaan in buffer".</p>
+        <button id="copyBuffer" type="button" class="secondary" disabled>Alles kopiëren</button>
+    </section>
 
     <details id="jsonBox" open>
         <summary>Volledige JSON</summary>
@@ -601,7 +672,7 @@
                 fieldsBox.querySelector(`[data-key="${key}"]`).classList.toggle("hidden", !required.has(key)));
 
             pickCount.textContent = `${required.size} van ${FIELDS.length}`;
-            button.disabled = !officeReady || required.size === 0;
+            button.disabled = !officeReady || required.size === 0 || !hasItem();
 
             if (officeReady && required.size === 0) {
                 setStatus("Kies minstens één veld.", true);
@@ -843,9 +914,64 @@
             }
 
             officeReady = true;
-            setStatus("Outlook is klaar.");
+            setStatus(hasItem() ? "Outlook is klaar." : "Selecteer een e-mail.");
+            currentItemId = itemIdentity();
             previewSelection();
             applyRequired();
+            renderBuffer();
+
+            // Vastgezet (pinned) paneel: Outlook wisselt de e-mail zonder het paneel te herladen.
+            // Zonder deze handler blijft de lijst met bijlagen van de vorige e-mail staan.
+            Office.context.mailbox.addHandlerAsync?.(Office.EventType.ItemChanged, onItemChanged, result => {
+                if (result?.status !== Office.AsyncResultStatus.Succeeded) {
+                    console.warn("ItemChanged niet beschikbaar:", result?.error?.message);
+                }
+            });
+        });
+
+        // ── Andere e-mail geselecteerd ──────────────────────────────
+        let currentItemId = null;
+
+        const hasItem = () => Boolean(Office.context?.mailbox?.item);
+
+        // itemId ontbreekt bij een nieuw (nog niet opgeslagen) bericht; dan onderwerp + afzender
+        const itemIdentity = () => {
+            const item = Office.context?.mailbox?.item;
+            if (!item) return null;
+            return item.itemId ?? `${item.subject ?? ""}|${item.from?.emailAddress ?? ""}`;
+        };
+
+        const onItemChanged = () => {
+            const id = itemIdentity();
+            if (id === currentItemId) return;
+            currentItemId = id;
+
+            // Lopende aanvraag hoort bij de vorige e-mail: stoppen, resultaat negeren
+            if (run) {
+                run.cancelled = true;
+                run.itemChanged = true;
+                run.xhr?.abort();
+            }
+
+            // Resultaten van de vorige e-mail wissen; de buffer blijft staan
+            lastResult = null;
+            selectedKey = null;
+            fileNotes = new Map();
+            resetFields();
+            showNotices();
+            result.textContent = "Nog geen gegevens.";
+            resetButton.disabled = true;
+
+            previewSelection();
+            applyRequired();
+            renderBuffer();
+            setStatus(hasItem() ? "Andere e-mail geselecteerd. Klik op \"Gegevens ophalen\"." : "Selecteer een e-mail.");
+        };
+
+        // Reserve: sommige Outlook-versies sturen ItemChanged niet; bij terugkeer naar het paneel controleren
+        window.addEventListener("focus", () => { if (officeReady) onItemChanged(); });
+        document.addEventListener("visibilitychange", () => {
+            if (officeReady && document.visibilityState === "visible") onItemChanged();
         });
 
         // ── Laden, voortgang, afbreken ──────────────────────────────
@@ -1004,13 +1130,25 @@
 
                 result.textContent = JSON.stringify(data, null, 2);
 
+                // Voor "Opslaan in buffer": resultaat + van welke e-mail het komt
+                lastResult = {
+                    data,
+                    itemId: currentItemId,
+                    subject: item.subject ?? "",
+                    sender: item.from?.emailAddress ?? "",
+                    file: files[0]?.name ?? ""
+                };
+                renderBuffer();
+
                 const total = Object.keys(data.fields ?? {}).length;
                 setStatus(data.readyToSend
                     ? `Alle verplichte velden gevonden (${total} van ${total}).`
                     : `${countFound(data)} van ${total} verplichte velden gevonden. Controleer de velden zonder groen label.`);
                 showNotices(data.issues, data.warnings);
             } catch (error) {
-                if (error instanceof Cancelled) {
+                if (error instanceof Cancelled && current.itemChanged) {
+                    // Andere e-mail gekozen tijdens het laden: onItemChanged heeft alles al opgeruimd
+                } else if (error instanceof Cancelled) {
                     // Afgebroken: velden leeg laten, niets half tonen
                     resetFields();
                     fileNotes = new Map();
@@ -1042,6 +1180,8 @@
 
         // "Annuleren": alles terug naar de beginstand (veldkeuze blijft bewaard)
         resetButton.addEventListener("click", () => {
+            lastResult = null;
+            renderBuffer();
             showNotices();
             resetFields();
             fileNotes = new Map();
@@ -1051,6 +1191,177 @@
             resetButton.disabled = true;
         });
 
+        // ── Buffer ─────────────────────────────────────────────────
+        // Bewaarde gegevens voor automatisch invullen elders. Blijft staan bij een andere e-mail
+        // en na herstart van het paneel (localStorage van Outlook; lukt dat niet, dan alleen in geheugen).
+        //   • "Opslaan in buffer": velden met een bruikbare waarde (gevonden / controleren / twijfel)
+        //     overschrijven dezelfde velden in de buffer; velden zonder waarde laten de buffer ongemoeid.
+        //     Zo kunnen gegevens uit meerdere e-mails worden verzameld (bv. klant + factuur).
+        //   • Ongeldige waarden en conflicten worden niet bewaard.
+        //   • "Buffer wissen": twee keer klikken (bevestiging), dan leeg.
+        const BUFFER_STORAGE_KEY = "nidaros.buffer";
+        const SAVABLE = new Set(["found", "review", "guessed"]);
+
+        let lastResult = null;
+        let memoryBuffer = {};
+
+        const saveBufferButton = document.getElementById("saveBuffer");
+        const clearBufferButton = document.getElementById("clearBuffer");
+        const copyBufferButton = document.getElementById("copyBuffer");
+        const bufferList = document.getElementById("bufferList");
+        const bufferEmpty = document.getElementById("bufferEmpty");
+        const bufferMeta = document.getElementById("bufferMeta");
+
+        const loadBuffer = () => {
+            try {
+                const saved = JSON.parse(localStorage.getItem(BUFFER_STORAGE_KEY) ?? "null");
+                if (saved && typeof saved === "object") return saved;
+            } catch { /* geen opslag beschikbaar */ }
+            return memoryBuffer;
+        };
+
+        const storeBuffer = buffer => {
+            memoryBuffer = buffer;
+            try {
+                if (Object.keys(buffer).length) localStorage.setItem(BUFFER_STORAGE_KEY, JSON.stringify(buffer));
+                else localStorage.removeItem(BUFFER_STORAGE_KEY);
+            } catch { /* alleen in geheugen */ }
+        };
+
+        const labelOf = key => FIELDS.find(([k]) => k === key)?.[1] ?? key;
+
+        const displayValue = (key, value) =>
+            key === "customerType" ? CUSTOMER_TYPE_LABELS[value] ?? value : value;
+
+        const formatTime = iso => {
+            try {
+                return new Date(iso).toLocaleString("nl-NL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+            } catch { return ""; }
+        };
+
+        const copyText = async (text, btn, label) => {
+            try {
+                await navigator.clipboard.writeText(text);
+                btn.textContent = "Gekopieerd ✓";
+            } catch {
+                // Fallback: verborgen tekstveld selecteren en kopiëren
+                const area = document.createElement("textarea");
+                area.value = text;
+                document.body.append(area);
+                area.select();
+                const ok = document.execCommand?.("copy");
+                area.remove();
+                btn.textContent = ok ? "Gekopieerd ✓" : "Kopiëren mislukt";
+            }
+            setTimeout(() => { btn.textContent = label; }, 2000);
+        };
+
+        const renderBuffer = () => {
+            const buffer = loadBuffer();
+            // Volgorde van FIELDS aanhouden
+            const keys = FIELDS.map(([k]) => k).filter(k => buffer[k]);
+
+            bufferList.innerHTML = "";
+
+            keys.forEach(key => {
+                const entry = buffer[key];
+                const li = document.createElement("li");
+
+                const label = document.createElement("span");
+                label.className = "buffer-label";
+                label.textContent = labelOf(key) + (entry.status !== "found" ? " (controleren)" : "");
+
+                const value = document.createElement("span");
+                value.className = "buffer-value";
+                value.textContent = displayValue(key, entry.value);
+
+                const source = document.createElement("span");
+                source.className = "buffer-source";
+                source.textContent = `Uit: ${entry.subject || "(geen onderwerp)"}${entry.file ? " · " + entry.file : ""} · ${formatTime(entry.savedAt)}`;
+
+                const copy = document.createElement("button");
+                copy.type = "button";
+                copy.className = "secondary";
+                copy.textContent = "Kopiëren";
+                copy.addEventListener("click", () => copyText(displayValue(key, entry.value), copy, "Kopiëren"));
+
+                const text = document.createElement("div");
+                text.append(label, document.createElement("br"), value);
+                li.append(text, copy, source);
+                bufferList.append(li);
+            });
+
+            bufferEmpty.hidden = keys.length > 0;
+            bufferEmpty.classList.toggle("hidden", keys.length > 0);
+            bufferMeta.textContent = keys.length ? `${keys.length} van ${FIELDS.length} velden` : "";
+            clearBufferButton.disabled = keys.length === 0;
+            copyBufferButton.disabled = keys.length === 0;
+
+            const savable = lastResult && lastResult.itemId === currentItemId
+                ? FIELDS.filter(([k]) => SAVABLE.has(lastResult.data?.fields?.[k]?.status) && lastResult.data.fields[k].value).length
+                : 0;
+            saveBufferButton.disabled = savable === 0;
+            saveBufferButton.textContent = savable ? `Opslaan in buffer (${savable})` : "Opslaan in buffer";
+        };
+
+        saveBufferButton.addEventListener("click", () => {
+            if (!lastResult || lastResult.itemId !== currentItemId) return;
+
+            const buffer = { ...loadBuffer() };
+            const savedAt = new Date().toISOString();
+            let count = 0;
+
+            FIELDS.forEach(([key]) => {
+                const field = lastResult.data?.fields?.[key];
+                if (!field?.value || !SAVABLE.has(field.status)) return;
+
+                buffer[key] = {
+                    value: field.value,
+                    status: field.status,
+                    subject: lastResult.subject,
+                    sender: lastResult.sender,
+                    file: lastResult.file,
+                    savedAt
+                };
+                count++;
+            });
+
+            storeBuffer(buffer);
+            renderBuffer();
+            setStatus(`${count} velden opgeslagen in de buffer.`);
+        });
+
+        let clearArmed = null;
+
+        clearBufferButton.addEventListener("click", () => {
+            // Eerste klik: bevestiging vragen (confirm() werkt niet in Outlook-invoegtoepassingen)
+            if (!clearArmed) {
+                clearBufferButton.textContent = "Zeker? Klik nogmaals";
+                clearArmed = setTimeout(() => {
+                    clearArmed = null;
+                    clearBufferButton.textContent = "Buffer wissen";
+                }, 4000);
+                return;
+            }
+
+            clearTimeout(clearArmed);
+            clearArmed = null;
+            clearBufferButton.textContent = "Buffer wissen";
+            storeBuffer({});
+            renderBuffer();
+            setStatus("Buffer gewist.");
+        });
+
+        copyBufferButton.addEventListener("click", () => {
+            const buffer = loadBuffer();
+            const text = FIELDS
+                .filter(([k]) => buffer[k])
+                .map(([k, label]) => `${label}: ${displayValue(k, buffer[k].value)}`)
+                .join("\n");
+            copyText(text, copyBufferButton, "Alles kopiëren");
+        });
+
+        renderBuffer();
         applyRequired();
     </script>
 </body>
