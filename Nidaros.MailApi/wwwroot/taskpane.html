@@ -444,6 +444,7 @@
         </div>
 
         <p id="modeHint" class="hint"></p>
+        <button id="refreshMail" type="button" class="secondary" style="width:100%;border:1px solid #ddd">Vernieuw huidige e-mail</button>
 
         <ul id="fileList"></ul>
 
@@ -922,11 +923,20 @@
 
             // Vastgezet (pinned) paneel: Outlook wisselt de e-mail zonder het paneel te herladen.
             // Zonder deze handler blijft de lijst met bijlagen van de vorige e-mail staan.
-            Office.context.mailbox.addHandlerAsync?.(Office.EventType.ItemChanged, onItemChanged, result => {
-                if (result?.status !== Office.AsyncResultStatus.Succeeded) {
-                    console.warn("ItemChanged niet beschikbaar:", result?.error?.message);
-                }
-            });
+            if (Office.context.mailbox.addHandlerAsync && Office.EventType?.ItemChanged) {
+                Office.context.mailbox.addHandlerAsync(Office.EventType.ItemChanged, onItemChanged, eventResult => {
+                    if (eventResult.status !== Office.AsyncResultStatus.Succeeded) {
+                        console.warn("ItemChanged niet beschikbaar:", eventResult.error?.message);
+                    }
+                });
+            }
+
+            // Reserve voor clients die ItemChanged niet altijd uitsturen.
+            // Alleen een gewijzigde mailbox.item wordt opgemerkt; een oude, bevroren
+            // Office.js-context kan door de webpagina niet worden vernieuwd.
+            setInterval(() => {
+                if (officeReady && itemIdentity() !== currentItemId) onItemChanged();
+            }, 1500);
         });
 
         // ── Andere e-mail geselecteerd ──────────────────────────────
@@ -941,9 +951,9 @@
             return item.itemId ?? `${item.subject ?? ""}|${item.from?.emailAddress ?? ""}`;
         };
 
-        const onItemChanged = () => {
+        const onItemChanged = (force = false) => {
             const id = itemIdentity();
-            if (id === currentItemId) return;
+            if (!force && id === currentItemId) return;
             currentItemId = id;
 
             // Lopende aanvraag hoort bij de vorige e-mail: stoppen, resultaat negeren
@@ -969,6 +979,9 @@
         };
 
         // Reserve: sommige Outlook-versies sturen ItemChanged niet; bij terugkeer naar het paneel controleren
+        document.getElementById("refreshMail").addEventListener("click", () => {
+            if (officeReady) onItemChanged(true);
+        });
         window.addEventListener("focus", () => { if (officeReady) onItemChanged(); });
         document.addEventListener("visibilitychange", () => {
             if (officeReady && document.visibilityState === "visible") onItemChanged();
