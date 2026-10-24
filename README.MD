@@ -1,37 +1,27 @@
-# Nidaros Mail Assistant
+# Nidaros — AI-Hub testomgeving (Postman-compatible)
 
-Outlook-invoegtoepassing die gegevens uit een e-mail en de bijlage haalt via de Nidaros-server.
+## Bestanden
+- `Program.cs`: POST /api/auth/login, POST /api/auth/verify, POST /api/auth/logout, beveiligd POST /api/mail/analyze.
+- `AiHubAuthService.cs`: AI-Hub V1 Login en Token via `application/x-www-form-urlencoded`.
+- `wwwroot/taskpane.html`: bestaande Outlook-interface met login- en OTP-panelen.
+- Bestaande `MailAnalyzer.cs` ongewijzigd laten.
 
-Na **Analyze mail** opent het paneel. Bij **Gegevens ophalen** stuurt het paneel de e-mail en de gekozen bijlage naar `POST /api/mail/analyze` op dezelfde server en toont het antwoord.
+## Render Environment
 
-```text
-Outlook → manifest.xml → taskpane.html → /api/mail/analyze → antwoord in het paneel
-```
+`AIHUB_BASE_URL=https://api.ais-test.nidaros-appserver.com`
 
-## Manifest installeren
+## Postman contract (uit aangeleverde collectie)
 
-1. Open https://aka.ms/olksideload (Outlook op het web of de nieuwe Outlook).
-   In de klassieke Outlook: **Start → Invoegtoepassingen ophalen**.
-2. Ga naar **Mijn invoegtoepassingen → Aangepaste invoegtoepassingen**.
-3. Kies **Een aangepaste invoegtoepassing toevoegen → Toevoegen vanuit bestand** en selecteer `manifest.xml`.
-4. Open een e-mail en klik op **Analyze mail** in het lint.
+- POST `/v1/Login`: `userName`, `password` (form-url-encoded). Antwoord bevat `TwoFactorAuthenticationId`.
+- POST `/v1/Token`: `grant_type=password`, `AuthenticationId`, `AuthenticationCode` (form-url-encoded). Antwoord bevat `access_token`.
 
----
+TOTP wordt **niet** op de server gegenereerd en seed wordt niet opgeslagen: gebruiker voert 6-cijferige code handmatig in Outlook in.
 
-# Nidaros Mail Assistant (RU)
+## Plaatsing
 
-Надстройка Outlook, которая извлекает данные из письма и вложения через сервер Nidaros.
+1. Kopieer `Program.cs` en `AiHubAuthService.cs` naar dezelfde C# projectmap als `MailAnalyzer.cs`.
+2. Vervang `wwwroot/taskpane.html`.
+3. Stel alleen `AIHUB_BASE_URL` in op Render. Verwijder oude `AIHUB_LOGIN_URL` / `AIHUB_TOKEN_URL` indien aanwezig.
+4. Deploy en controleer `/health`, inloggen, verificatie, documentanalyse en uitloggen.
 
-По кнопке **Analyze mail** открывается панель. По **Gegevens ophalen** панель отправляет письмо и выбранное вложение на `POST /api/mail/analyze` того же сервера и показывает ответ.
-
-```text
-Outlook → manifest.xml → taskpane.html → /api/mail/analyze → ответ в панели
-```
-
-## Установка манифеста
-
-1. Откройте https://aka.ms/olksideload (Outlook в браузере или новый Outlook).
-   В классическом Outlook: **Главная → Получить надстройки** (Get Add-ins).
-2. Перейдите в **Мои надстройки → Пользовательские надстройки** (My add-ins → Custom add-ins).
-3. Выберите **Добавить пользовательскую надстройку → Добавить из файла** (Add from file) и укажите `manifest.xml`.
-4. Откройте письмо и нажмите **Analyze mail** на ленте.
+Beveiliging: analyse-endpoint valideert een lokale sessie; alleen UI verbergen is onvoldoende. Sessies zitten in het geheugen (verdwijnen bij Render-restart; voor meerdere replicas is gedeelde sessieopslag nodig). Geen wachtwoorden, TOTP-seeds of AI-Hub tokens naar logs of browser storage. Rate limits en HTTPS blijven noodzakelijk in productie.

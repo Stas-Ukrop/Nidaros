@@ -416,12 +416,45 @@
             color: #176b52;
             font-weight: 600;
         }
+        .auth-card { max-width: 420px; margin: 20px auto; padding: 18px; border: 1px solid #d7e5de; border-radius: 10px; }
+        .auth-card h3 { margin: 10px 0 12px; }
+        .auth-card form { display: grid; gap: 9px; margin-top: 18px; }
+        .auth-card label { font-size: 13px; font-weight: 600; }
+        .auth-card input { width: 100%; padding: 11px; border: 1px solid #aaa; border-radius: 6px; font: inherit; }
+        .auth-card button { margin-top: 8px; }
+        .auth-error { color: #a1261b; font-size: 13px; min-height: 18px; overflow-wrap: anywhere; }
+        .auth-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
     </style>
 </head>
 
 <body>
-    <h2>Nidaros Mail Assistant</h2>
-    <p id="syncInfo" class="hint sync-info">Paneel v4</p>
+    <section id="authLogin" class="auth-card">
+        <h2>Nidaros Mail Assistant</h2>
+        <h3>Inloggen</h3>
+        <p class="hint">Log in met uw AI-Hub account.</p>
+        <form id="loginForm">
+            <label for="loginUser">Gebruikersnaam</label>
+            <input id="loginUser" autocomplete="username" required maxlength="150">
+            <label for="loginPassword">Wachtwoord</label>
+            <input id="loginPassword" type="password" autocomplete="current-password" required>
+            <button id="loginButton" type="submit">Inloggen</button>
+        </form>
+        <p id="loginError" class="auth-error" role="alert"></p>
+    </section>
+    <section id="authOtp" class="auth-card hidden">
+        <h2>Verificatie</h2>
+        <p class="hint">Voer de 6-cijferige code van uw authenticator in.</p>
+        <form id="otpForm">
+            <label for="otpCode">Verificatiecode</label>
+            <input id="otpCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
+            <button id="otpButton" type="submit">Bevestigen</button>
+        </form>
+        <button id="backLogin" class="secondary" type="button">Terug naar inloggen</button>
+        <p id="otpError" class="auth-error" role="alert"></p>
+    </section>
+    <div id="analyzerPanel" class="hidden">
+        <div class="auth-toolbar"><strong>Nidaros Mail Assistant</strong><button id="logout" class="secondary" type="button">Uitloggen</button></div>
+    <p id="syncInfo" class="hint sync-info">Paneel v5</p>
     <p id="status">Outlook wordt gestart...</p>
     <ul id="notices"></ul>
 
@@ -515,6 +548,7 @@
         <pre id="result">Nog geen gegevens.</pre>
     </details>
 
+    </div>
     <script>
         const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -678,7 +712,7 @@
                 fieldsBox.querySelector(`[data-key="${key}"]`).classList.toggle("hidden", !required.has(key)));
 
             pickCount.textContent = `${required.size} van ${FIELDS.length}`;
-            button.disabled = !officeReady || required.size === 0 || !hasItem();
+            button.disabled = !authToken || !officeReady || required.size === 0 || !hasItem();
 
             if (officeReady && required.size === 0) {
                 setStatus("Kies minstens één veld.", true);
@@ -1013,6 +1047,7 @@
 
             xhr.open("POST", url);
             xhr.setRequestHeader("Content-Type", "application/json");
+            if (authToken) xhr.setRequestHeader("Authorization", `Bearer ${authToken}`);
             xhr.timeout = 120000;
 
             xhr.upload.onprogress = e => { if (e.lengthComputable) onUpload(e.loaded / e.total); };
@@ -1047,6 +1082,7 @@
         };
 
         button.addEventListener("click", async () => {
+            if (!authToken) { showAuth("login"); return; }
             const current = { cancelled: false, xhr: null };
             run = current;
 
@@ -1107,6 +1143,11 @@
 
                 const data = response.data;
 
+                if (response.status === 401) {
+                    authToken = null;
+                    showAuth("login");
+                    throw new Error("Uw sessie is verlopen. Log opnieuw in.");
+                }
                 if (!response.ok) {
                     result.textContent = data ? JSON.stringify(data, null, 2) : "";
                     throw new Error(`Server error ${response.status}: ${data?.error ?? response.statusText}`);
@@ -1360,7 +1401,7 @@
         // Toont welke e-mail het paneel ziet en of "andere e-mail" binnenkomt.
         // Staat hier het onderwerp van de VORIGE e-mail, dan geeft Outlook het paneel de nieuwe
         // e-mail niet: paneel niet vastgezet (punaise) of oude manifest nog actief.
-        const PANEL_VERSION = "4";
+        const PANEL_VERSION = "5";
         const syncInfo = document.getElementById("syncInfo");
         let eventState = "wordt gestart";
 
@@ -1371,6 +1412,86 @@
             syncInfo.textContent = `Paneel v${PANEL_VERSION} · e-mail: ${mail} · ItemChanged: ${eventState}${switches}`;
             syncInfo.classList.toggle("off", eventState !== "aan" && eventState !== "wordt gestart");
         };
+
+
+        // AI-Hub: toegangstoken alleen in geheugen, nooit in localStorage.
+        let authToken = null;
+        let challengeId = null;
+        const authLogin = document.getElementById("authLogin");
+        const authOtp = document.getElementById("authOtp");
+        const analyzerPanel = document.getElementById("analyzerPanel");
+        const showAuth = page => {
+            authLogin.classList.toggle("hidden", page !== "login");
+            authOtp.classList.toggle("hidden", page !== "otp");
+            analyzerPanel.classList.toggle("hidden", page !== "analyzer");
+            if (page === "analyzer") {
+                previewSelection();
+                applyRequired();
+                renderBuffer();
+            }
+        };
+        const authPost = async (url, payload) => {
+            const response = await fetch(url, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload), cache: "no-store"
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            return data;
+        };
+        document.getElementById("loginForm").addEventListener("submit", async event => {
+            event.preventDefault();
+            const btn = document.getElementById("loginButton");
+            const err = document.getElementById("loginError");
+            btn.disabled = true; err.textContent = "";
+            try {
+                const data = await authPost("/api/auth/login", {
+                    userName: document.getElementById("loginUser").value.trim(),
+                    password: document.getElementById("loginPassword").value
+                });
+                document.getElementById("loginPassword").value = "";
+                challengeId = data.challengeId;
+                if (!challengeId) throw new Error("Geen verificatie-id ontvangen.");
+                showAuth("otp");
+                document.getElementById("otpCode").focus();
+            } catch (error) { err.textContent = error.message; }
+            finally { btn.disabled = false; }
+        });
+        document.getElementById("otpForm").addEventListener("submit", async event => {
+            event.preventDefault();
+            const btn = document.getElementById("otpButton");
+            const err = document.getElementById("otpError");
+            btn.disabled = true; err.textContent = "";
+            try {
+                const code = document.getElementById("otpCode").value.trim();
+                if (!/^[0-9]{6}$/.test(code)) throw new Error("Gebruik een code van 6 cijfers.");
+                const data = await authPost("/api/auth/verify", { challengeId, code });
+                if (!data.accessToken) throw new Error("Geen toegangstoken ontvangen.");
+                authToken = data.accessToken;
+                challengeId = null;
+                document.getElementById("otpCode").value = "";
+                showAuth("analyzer");
+            } catch (error) { err.textContent = error.message; }
+            finally { btn.disabled = false; }
+        });
+        document.getElementById("backLogin").addEventListener("click", () => {
+            challengeId = null;
+            document.getElementById("otpCode").value = "";
+            showAuth("login");
+        });
+        document.getElementById("logout").addEventListener("click", async () => {
+            const token = authToken;
+            authToken = null;
+            challengeId = null;
+            run?.xhr?.abort();
+            lastResult = null;
+            resetFields();
+            result.textContent = "Nog geen gegevens.";
+            showAuth("login");
+            if (token) await fetch("/api/auth/logout", {
+                method: "POST", headers: { Authorization: `Bearer ${token}` }
+            }).catch(() => {});
+        });
 
         // ── Start ──────────────────────────────────────────────────
         // Office.onReady staat helemaal onderaan: alle functies en variabelen hierboven bestaan dan al.
