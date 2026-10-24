@@ -5,6 +5,10 @@ builder.Services.AddHttpClient<AiHubAuthService>(client =>
     client.Timeout = TimeSpan.FromSeconds(20);
 });
 builder.Services.AddSingleton<AuthSessionStore>();
+builder.Services.AddHttpClient<AiHubPaymentService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(25);
+});
 
 var app = builder.Build();
 
@@ -42,7 +46,7 @@ app.MapPost("/api/auth/verify", async (VerifyRequest request, AiHubAuthService a
     var result = await auth.VerifyAsync(remoteId!, request.Code);
     if (result.Value is null)
         return Results.Json(new { error = result.Error }, statusCode: result.StatusCode);
-    var token = sessions.AddSession();
+    var token = sessions.AddSession(result.Value);
     return Results.Ok(new { accessToken = token, expiresIn = 1800 });
 });
 
@@ -58,6 +62,15 @@ app.MapPost("/api/mail/analyze", (HttpContext ctx, MailRequest mail, AuthSession
         return Results.Unauthorized();
     var (response, error) = MailAnalyzer.Analyze(mail);
     return error is null ? Results.Ok(response) : Results.BadRequest(new { error });
+});
+
+// Payment requests are only created after explicit user confirmation.
+app.MapPost("/api/payments/v3/create", async (HttpContext ctx, CreatePaymentRequest request,
+    AuthSessionStore sessions, AiHubPaymentService payments) =>
+{
+    if (!sessions.TryGetAiHubToken(Bearer(ctx), out var aiHubToken)) return Results.Unauthorized();
+    var outcome = await payments.CreateAsync(request, aiHubToken!);
+    return Results.Json(outcome.Body, statusCode: outcome.StatusCode);
 });
 
 app.Run();

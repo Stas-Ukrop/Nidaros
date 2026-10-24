@@ -416,6 +416,11 @@
             color: #176b52;
             font-weight: 600;
         }
+        .payment-box {margin:18px 0;padding:14px;border:1px solid #b9d9cc;border-radius:8px;background:#f7fbf9;display:grid;gap:9px;}
+        .payment-box label {font-size:13px;font-weight:600;}
+        .payment-box input {width:100%;padding:10px;border:1px solid #aaa;border-radius:6px;}
+        .payment-box .hint {line-height:1.5;}
+        #paymentOutput a {overflow-wrap:anywhere;}
         .auth-card { max-width: 420px; margin: 20px auto; padding: 18px; border: 1px solid #d7e5de; border-radius: 10px; }
         .auth-card h3 { margin: 10px 0 12px; }
         .auth-card form { display: grid; gap: 9px; margin-top: 18px; }
@@ -454,7 +459,7 @@
     </section>
     <div id="analyzerPanel" class="hidden">
         <div class="auth-toolbar"><strong>Nidaros Mail Assistant</strong><button id="logout" class="secondary" type="button">Uitloggen</button></div>
-    <p id="syncInfo" class="hint sync-info">Paneel v5</p>
+    <p id="syncInfo" class="hint sync-info">Paneel v6</p>
     <p id="status">Outlook wordt gestart...</p>
     <ul id="notices"></ul>
 
@@ -538,6 +543,26 @@
         <ul id="bufferList"></ul>
         <p id="bufferEmpty" class="buffer-empty">Leeg. Haal gegevens op en klik op "Opslaan in buffer".</p>
         <button id="copyBuffer" type="button" class="secondary" disabled>Alles kopiëren</button>
+    </section>
+
+    <section class="payment-box" aria-labelledby="paymentTitle">
+        <h3 id="paymentTitle">Betaalverzoek — AI-Hub V3</h3>
+        <p class="hint">Controleer de gegevens zorgvuldig. Klikken op Aanmaken kan een echt betaalverzoek in de testomgeving maken.</p>
+        <form id="paymentForm" style="display:grid;gap:9px">
+            <label for="paymentAmount">Bedrag (€), met punt als decimaal</label>
+            <input id="paymentAmount" inputmode="decimal" placeholder="24.95" required>
+            <label for="paymentDescription">Omschrijving</label>
+            <input id="paymentDescription" maxlength="250" required placeholder="Factuur 2026-001">
+            <label for="paymentReturn">ReturnUrl (optioneel, HTTPS)</label>
+            <input id="paymentReturn" type="url" placeholder="https://voorbeeld.nl/terug">
+            <label for="paymentValidity">Geldigheid in minuten (optioneel)</label>
+            <input id="paymentValidity" inputmode="numeric" type="number" min="1" max="525600" placeholder="Standaard instelling AI-Hub">
+            <button type="button" id="paymentPrefill" class="secondary">Gebruik gegevens uit laatste analyse</button>
+            <label style="font-weight:normal"><input id="paymentConfirm" type="checkbox" style="width:auto"> Ik heb het bedrag en de omschrijving gecontroleerd en bevestig het aanmaken.</label>
+            <button type="submit" id="paymentSubmit">Betaalverzoek aanmaken</button>
+        </form>
+        <p id="paymentError" class="auth-error" role="alert"></p>
+        <div id="paymentOutput" role="status" aria-live="polite"></div>
     </section>
 
     <details id="jsonBox" open>
@@ -1401,7 +1426,7 @@
         // Toont welke e-mail het paneel ziet en of "andere e-mail" binnenkomt.
         // Staat hier het onderwerp van de VORIGE e-mail, dan geeft Outlook het paneel de nieuwe
         // e-mail niet: paneel niet vastgezet (punaise) of oude manifest nog actief.
-        const PANEL_VERSION = "5";
+        const PANEL_VERSION = "6";
         const syncInfo = document.getElementById("syncInfo");
         let eventState = "wordt gestart";
 
@@ -1491,6 +1516,63 @@
             if (token) await fetch("/api/auth/logout", {
                 method: "POST", headers: { Authorization: `Bearer ${token}` }
             }).catch(() => {});
+        });
+
+        // AI-Hub V3: alleen expliciete, bevestigde payment requests; geen automatische retry.
+        document.getElementById("paymentPrefill").addEventListener("click", () => {
+            const fields = lastResult?.itemId === currentItemId ? lastResult.data?.fields : null;
+            const total = fields?.totalInclVat;
+            const number = fields?.invoiceNumber;
+            if (total?.status === "found") document.getElementById("paymentAmount").value = total.value;
+            if (number?.status === "found") document.getElementById("paymentDescription").value = `Factuur ${number.value}`;
+            document.getElementById("paymentConfirm").checked = false;
+        });
+        document.getElementById("paymentForm").addEventListener("submit", async e => {
+            e.preventDefault();
+            const errorBox = document.getElementById("paymentError");
+            const output = document.getElementById("paymentOutput");
+            const submit = document.getElementById("paymentSubmit");
+            errorBox.textContent = ""; output.replaceChildren();
+            if (!authToken) { showAuth("login"); return; }
+            if (!document.getElementById("paymentConfirm").checked) {
+                errorBox.textContent = "Bevestig eerst het bedrag en de omschrijving."; return;
+            }
+            const amount = document.getElementById("paymentAmount").value.trim();
+            if (!/^\d+(?:\.\d{1,2})?$/.test(amount) || Number(amount) <= 0) {
+                errorBox.textContent = "Gebruik een geldig bedrag met punt en maximaal twee decimalen."; return;
+            }
+            const validity = document.getElementById("paymentValidity").value.trim();
+            const payload = {
+                amount,
+                description: document.getElementById("paymentDescription").value.trim(),
+                returnUrl: document.getElementById("paymentReturn").value.trim() || null,
+                validityMinutes: validity ? Number(validity) : null
+            };
+            if (!payload.description) { errorBox.textContent = "Omschrijving ontbreekt."; return; }
+            submit.disabled = true;
+            try {
+                const response = await fetch("/api/payments/v3/create", {
+                    method: "POST", cache: "no-store",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${authToken}` },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json().catch(() => ({}));
+                if (response.status === 401) { authToken = null; showAuth("login"); throw new Error("Sessie verlopen. Log opnieuw in."); }
+                if (!response.ok) throw new Error(data.error || `HTTP ${response.status}. Controleer AI-Hub voordat u opnieuw probeert.`);
+                const line = document.createElement("p");
+                line.textContent = `Betaalverzoek aangemaakt. ID: ${data.paymentRequestId || "onbekend"}`;
+                output.append(line);
+                if (data.paymentRequestUrl && /^https:\/\//i.test(data.paymentRequestUrl)) {
+                    const link = document.createElement("a"); link.href = data.paymentRequestUrl;
+                    link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Betalingslink openen";
+                    output.append(link);
+                }
+                if (data.validUntilUtc) {
+                    const until = document.createElement("p"); until.textContent = `Geldig tot: ${data.validUntilUtc}`; output.append(until);
+                }
+                document.getElementById("paymentConfirm").checked = false;
+            } catch (error) { errorBox.textContent = error.message; }
+            finally { submit.disabled = false; }
         });
 
         // ── Start ──────────────────────────────────────────────────

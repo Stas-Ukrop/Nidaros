@@ -81,7 +81,7 @@ public record AuthReply<T>(T? Value, string? Error, int StatusCode);
 public sealed class AuthSessionStore
 {
     private readonly ConcurrentDictionary<string, (string RemoteId, DateTimeOffset Until, int Attempts)> challenges = new();
-    private readonly ConcurrentDictionary<string, DateTimeOffset> sessions = new();
+    private readonly ConcurrentDictionary<string, (string AiHubToken, DateTimeOffset Until)> sessions = new();
     private readonly ConcurrentDictionary<string, (int Count, DateTimeOffset Until)> attempts = new();
 
     public bool AllowAttempt(string ip)
@@ -108,14 +108,21 @@ public sealed class AuthSessionStore
         remoteId = c.RemoteId;
         return true;
     }
-    public string AddSession()
+    public string AddSession(string aiHubToken)
     {
         var token = NewToken();
-        sessions[token] = DateTimeOffset.UtcNow.AddMinutes(30);
+        sessions[token] = (aiHubToken, DateTimeOffset.UtcNow.AddMinutes(30));
         return token;
     }
-    public bool ValidSession(string? token) => token is not null &&
-        sessions.TryGetValue(token, out var until) && until > DateTimeOffset.UtcNow;
+    public bool TryGetAiHubToken(string? token, out string? aiHubToken)
+    {
+        aiHubToken = null;
+        if (token is null || !sessions.TryGetValue(token, out var session)) return false;
+        if (session.Until <= DateTimeOffset.UtcNow) { sessions.TryRemove(token, out _); return false; }
+        aiHubToken = session.AiHubToken;
+        return true;
+    }
+    public bool ValidSession(string? token) => TryGetAiHubToken(token, out _);
     public void RemoveSession(string? token) { if (token is not null) sessions.TryRemove(token, out _); }
     private static string NewToken() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 }
