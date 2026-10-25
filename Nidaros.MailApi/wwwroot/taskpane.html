@@ -428,13 +428,19 @@
         .auth-card input { width: 100%; padding: 11px; border: 1px solid #aaa; border-radius: 6px; font: inherit; }
         .auth-card button { margin-top: 8px; }
         .auth-error { color: #a1261b; font-size: 13px; min-height: 18px; overflow-wrap: anywhere; }
+        .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .brand-logo { width: 38px; height: 38px; object-fit: contain; flex: none; }
+        .brand--login { margin-bottom: 12px; }
+        .brand--login .brand-logo { width: 48px; height: 48px; }
+        .brand-name { font-size: 18px; font-weight: 700; line-height: 1.25; }
+        .auth-toolbar .brand-name { font-size: 14px; }
         .auth-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
     </style>
 </head>
 
 <body>
     <section id="authLogin" class="auth-card">
-        <h2>Nidaros Mail Assistant</h2>
+        <div class="brand brand--login"><img class="brand-logo" src="./nidaros-logo.png" alt="Nidaros logo"><span class="brand-name">Nidaros Mail Assistant</span></div>
         <h3>Inloggen</h3>
         <p class="hint">Log in met uw AI-Hub account.</p>
         <form id="loginForm">
@@ -447,6 +453,7 @@
         <p id="loginError" class="auth-error" role="alert"></p>
     </section>
     <section id="authOtp" class="auth-card hidden">
+        <div class="brand brand--login"><img class="brand-logo" src="./nidaros-logo.png" alt="Nidaros logo"><span class="brand-name">Nidaros Mail Assistant</span></div>
         <h2>Verificatie</h2>
         <p class="hint">Voer de 6-cijferige code van uw authenticator in.</p>
         <form id="otpForm">
@@ -458,7 +465,7 @@
         <p id="otpError" class="auth-error" role="alert"></p>
     </section>
     <div id="analyzerPanel" class="hidden">
-        <div class="auth-toolbar"><strong>Nidaros Mail Assistant</strong><button id="logout" class="secondary" type="button">Uitloggen</button></div>
+        <div class="auth-toolbar"><div class="brand"><img class="brand-logo" src="./nidaros-logo.png" alt="Nidaros logo"><span class="brand-name">Nidaros Mail Assistant</span></div><button id="logout" class="secondary" type="button">Uitloggen</button></div>
     <p id="syncInfo" class="hint sync-info">Paneel v6</p>
     <p id="status">Outlook wordt gestart...</p>
     <ul id="notices"></ul>
