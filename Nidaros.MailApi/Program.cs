@@ -50,6 +50,13 @@ app.MapPost("/api/auth/verify", async (VerifyRequest request, AiHubAuthService a
     return Results.Ok(new { accessToken = token, expiresIn = 1800 });
 });
 
+// Controleren of de lokale server-sessie nog bestaat (geen nieuw token aanmaken).
+app.MapGet("/api/auth/session", (HttpContext ctx, AuthSessionStore sessions) =>
+{
+    if (!sessions.ValidSession(Bearer(ctx))) return Results.Unauthorized();
+    return Results.Ok(new { valid = true });
+});
+
 app.MapPost("/api/auth/logout", (HttpContext ctx, AuthSessionStore sessions) =>
 {
     sessions.RemoveSession(Bearer(ctx));

@@ -574,6 +574,7 @@
     </details>
 
     </div>
+    <script src="./auth-session.js"></script>
     <script>
         const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -1107,7 +1108,11 @@
         };
 
         button.addEventListener("click", async () => {
-            if (!authToken) { showAuth("login"); return; }
+            if (!authToken || !(await verifySession())) {
+                if (!authToken) showAuth("login");
+                return;
+            }
+            NidarosSession.touch();
             const current = { cancelled: false, xhr: null };
             run = current;
 
@@ -1169,8 +1174,7 @@
                 const data = response.data;
 
                 if (response.status === 401) {
-                    authToken = null;
-                    showAuth("login");
+                    revokeLocalSession();
                     throw new Error("Uw sessie is verlopen. Log opnieuw in.");
                 }
                 if (!response.ok) {
@@ -1439,9 +1443,48 @@
         };
 
 
-        // AI-Hub: toegangstoken alleen in geheugen, nooit in localStorage.
+        // Alleen onze server-sessietoken wordt lokaal opgeslagen; AI-Hub-token blijft server-side.
         let authToken = null;
         let challengeId = null;
+        let verifyingSession = false;
+        let sessionCheckPromise = null;
+
+        const revokeLocalSession = () => {
+            authToken = null;
+            NidarosSession.forget();
+            showAuth("login");
+        };
+
+        const verifySession = async () => {
+            if (!authToken || verifyingSession) return Boolean(authToken);
+            verifyingSession = true;
+            try {
+                if (NidarosSession.idleTooLong()) {
+                    revokeLocalSession();
+                    return false;
+                }
+                const valid = await NidarosSession.validate(authToken);
+                if (!valid) { revokeLocalSession(); return false; }
+                return true;
+            } catch (error) {
+                // Onbekende netwerkfout is geen bewijs van een verlopen token.
+                // Blokkeer nieuwe acties totdat opnieuw gecontroleerd kan worden.
+                console.warn("Sessiecontrole niet beschikbaar:", error.message);
+                setStatus("Sessiecontrole niet beschikbaar. Controleer uw verbinding.", true);
+                return false;
+            } finally {
+                verifyingSession = false;
+            }
+        };
+
+        const restoreSession = async () => {
+            const saved = NidarosSession.load();
+            if (!saved) { showAuth("login"); return; }
+            authToken = saved;
+            showAuth("login"); // geen toegang voordat de server gecontroleerd heeft
+            if (await verifySession()) showAuth("analyzer");
+        };
+
         const authLogin = document.getElementById("authLogin");
         const authOtp = document.getElementById("authOtp");
         const analyzerPanel = document.getElementById("analyzerPanel");
@@ -1493,6 +1536,7 @@
                 const data = await authPost("/api/auth/verify", { challengeId, code });
                 if (!data.accessToken) throw new Error("Geen toegangstoken ontvangen.");
                 authToken = data.accessToken;
+                NidarosSession.save(data.accessToken, data.expiresIn);
                 challengeId = null;
                 document.getElementById("otpCode").value = "";
                 showAuth("analyzer");
@@ -1507,6 +1551,7 @@
         document.getElementById("logout").addEventListener("click", async () => {
             const token = authToken;
             authToken = null;
+            NidarosSession.forget();
             challengeId = null;
             run?.xhr?.abort();
             lastResult = null;
@@ -1516,6 +1561,17 @@
             if (token) await fetch("/api/auth/logout", {
                 method: "POST", headers: { Authorization: `Bearer ${token}` }
             }).catch(() => {});
+        });
+
+        // Bij terugkeer naar Outlook opnieuw verifiëren; een timer verlengt niets.
+        window.addEventListener("focus", async () => {
+            if (authToken && !(await verifySession())) return;
+            if (authToken) showAuth("analyzer");
+        });
+        document.addEventListener("visibilitychange", async () => {
+            if (document.visibilityState === "visible" && authToken) {
+                if (await verifySession()) showAuth("analyzer");
+            }
         });
 
         // AI-Hub V3: alleen expliciete, bevestigde payment requests; geen automatische retry.
@@ -1533,7 +1589,11 @@
             const output = document.getElementById("paymentOutput");
             const submit = document.getElementById("paymentSubmit");
             errorBox.textContent = ""; output.replaceChildren();
-            if (!authToken) { showAuth("login"); return; }
+            if (!authToken || !(await verifySession())) {
+                if (!authToken) showAuth("login");
+                return;
+            }
+            NidarosSession.touch();
             if (!document.getElementById("paymentConfirm").checked) {
                 errorBox.textContent = "Bevestig eerst het bedrag en de omschrijving."; return;
             }
@@ -1557,7 +1617,7 @@
                     body: JSON.stringify(payload)
                 });
                 const data = await response.json().catch(() => ({}));
-                if (response.status === 401) { authToken = null; showAuth("login"); throw new Error("Sessie verlopen. Log opnieuw in."); }
+                if (response.status === 401) { revokeLocalSession(); throw new Error("Sessie verlopen. Log opnieuw in."); }
                 if (!response.ok) throw new Error(data.error || `HTTP ${response.status}. Controleer AI-Hub voordat u opnieuw probeert.`);
                 const line = document.createElement("p");
                 line.textContent = `Betaalverzoek aangemaakt. ID: ${data.paymentRequestId || "onbekend"}`;
@@ -1595,6 +1655,7 @@
             applyRequired();
             renderBuffer();
             updateSyncInfo();
+            restoreSession();
 
             // Vastgezet (pinned) paneel: Outlook wisselt de e-mail zonder het paneel te herladen.
             const mailbox = Office.context.mailbox;
