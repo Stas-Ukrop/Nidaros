@@ -1014,6 +1014,9 @@
 
             // Resultaten van de vorige e-mail wissen; de buffer blijft staan
             lastResult = null;
+            document.getElementById("paymentAmount").value = "";
+            document.getElementById("paymentDescription").value = "";
+            document.getElementById("paymentConfirm").checked = false;
             selectedKey = null;
             fileNotes = new Map();
             resetFields();
@@ -1172,7 +1175,7 @@
                         contentType: file.contentType ?? ""
                     })),
                     files,
-                    requestedFields: FIELDS.map(([key]) => key).filter(key => required.has(key))
+                    requestedFields: [...new Set([...FIELDS.map(([key]) => key).filter(key => required.has(key)), "totalInclVat", "invoiceNumber"])]
                 }, current, fraction => {
                     setProgress(30 + fraction * 50, fraction < 1 ? "Bestand versturen..." : "Gegevens worden geanalyseerd...");
                 });
@@ -1211,11 +1214,12 @@
                     file: files[0]?.name ?? ""
                 };
                 renderBuffer();
+                prefillPaymentFromAnalysis();
 
-                const total = Object.keys(data.fields ?? {}).length;
+                const total = [...required].length;
                 setStatus(data.readyToSend
                     ? `Alle verplichte velden gevonden (${total} van ${total}).`
-                    : `${countFound(data)} van ${total} verplichte velden gevonden. Controleer de velden zonder groen label.`);
+                    : `${FIELDS.filter(([key]) => required.has(key) && data.fields?.[key]?.status === "found").length} van ${total} verplichte velden gevonden. Controleer de velden zonder groen label.`);
                 showNotices(data.issues, data.warnings);
             } catch (error) {
                 if (error instanceof Cancelled && current.itemChanged) {
@@ -1582,14 +1586,21 @@
         });
 
         // AI-Hub V3: alleen expliciete, bevestigde payment requests; geen automatische retry.
-        document.getElementById("paymentPrefill").addEventListener("click", () => {
+        // Neem uitsluitend de herkende eindtotaalprijs incl. btw over: nooit btw bijrekenen
+        // en nooit subtotaal of losse artikelprijzen als betaalbedrag gebruiken.
+        const prefillPaymentFromAnalysis = () => {
             const fields = lastResult?.itemId === currentItemId ? lastResult.data?.fields : null;
+            const amountInput = document.getElementById("paymentAmount");
+            const descriptionInput = document.getElementById("paymentDescription");
             const total = fields?.totalInclVat;
             const number = fields?.invoiceNumber;
-            if (total?.status === "found") document.getElementById("paymentAmount").value = total.value;
-            if (number?.status === "found") document.getElementById("paymentDescription").value = `Factuur ${number.value}`;
+
+            // Bij meerdere facturen/conflicten niet één bedrag aan een willekeurige factuur koppelen.
+            amountInput.value = total?.status === "found" ? total.value : "";
+            descriptionInput.value = number?.status === "found" ? `Factuur ${number.value}` : "";
             document.getElementById("paymentConfirm").checked = false;
-        });
+        };
+        document.getElementById("paymentPrefill").addEventListener("click", prefillPaymentFromAnalysis);
         document.getElementById("paymentForm").addEventListener("submit", async e => {
             e.preventDefault();
             const errorBox = document.getElementById("paymentError");
