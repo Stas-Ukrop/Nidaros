@@ -1644,6 +1644,13 @@
                     const link = document.createElement("a"); link.href = data.paymentRequestUrl;
                     link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Betalingslink openen";
                     output.append(link);
+                    const copyLink = document.createElement("button");
+                    copyLink.type = "button";
+                    copyLink.className = "secondary";
+                    copyLink.textContent = "Link kopiëren";
+                    copyLink.style.marginLeft = "10px";
+                    copyLink.addEventListener("click", () => copyText(data.paymentRequestUrl, copyLink, "Link kopiëren"));
+                    output.append(copyLink);
                 }
                 if (data.validUntilUtc) {
                     const until = document.createElement("p"); until.textContent = `Geldig tot: ${data.validUntilUtc}`; output.append(until);
